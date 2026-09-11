@@ -1,0 +1,490 @@
+"""
+CallRecorder — taps the live event stream of a single call, accumulates the
+transcript + real token usage, computes cost, and persists via store.py.
+
+One instance per call. It is fed the SAME events that already drive the live
+viewer, so it never changes call behavior. Every persistence call is guarded so
+a storage failure can never break an in-progress call.
+"""
+
+import asyncio
+import logging
+import os
+import uuid
+from datetime import datetime, timezone
+
+import pricing
+import store
+
+logger = logging.getLogger(__name__)
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _in_bucket(mod):
+    m = str(mod).upper()
+    if "AUDIO" in m:
+        return "audio_in"
+    if "IMAGE" in m or "VIDEO" in m:
+        return "imgvid_in"
+    return "text_in"
+
+
+def _out_bucket(mod):
+    m = str(mod).upper()
+    if "AUDIO" in m:
+        return "audio_out"
+    return "text_out"
+
+
+# Romanised Hindi / Gujarati markers: the transcription usually comes back in Latin script, so a
+# script-only check would label every Hindi call "en". Two distinct hits in one turn is the bar.
+_HINDI_ROMAN_WORDS = frozenset(
+    "haan nahi nahin theek thik kya aap hai hain bolo boliye mein karo karenge achha accha ji "
+    "kaun kab kahan kaise kitne kyun batao dekhte pakka".split())
+_GUJARATI_ROMAN_WORDS = frozenset(
+    "chhe che nathi shu kem kyare ketla aavu aavish aavo majama saru bhai ben hoon karu".split())
+
+
+def _infer_language(text):
+    """Best-effort language guess for ONE caller turn: Unicode script first (Gujarati / Devanagari),
+    then romanised Hindi/Gujarati word hits, else Latin → "en"."""
+    if not text:
+        return None
+    gu = hi = latin = 0
+    for ch in text:
+        o = ord(ch)
+        if 0x0A80 <= o <= 0x0AFF:
+            gu += 1
+        elif 0x0900 <= o <= 0x097F:
+            hi += 1
+        elif ("a" <= ch.lower() <= "z"):
+            latin += 1
+    if gu and gu >= hi:
+        return "gu"
+    if hi:
+        return "hi"          # Devanagari (Hindi/Marathi share the script)
+    if latin:
+        words = set(w for w in text.lower().split() if w.isalpha())
+        if len(words & _GUJARATI_ROMAN_WORDS) >= 2:
+            return "gu"
+        if len(words & _HINDI_ROMAN_WORDS) >= 2:
+            return "hi"
+        return "en"
+    return "unknown"
+
+
+# Outcomes that count as a success on the dashboard tiles. Agents define their own vocabulary,
+# so this is the union across the shipped agent kinds rather than one agent's enum.
+_POSITIVE_OUTCOMES = frozenset({"yes", "acknowledged", "confirmed"})
+
+# Outcomes that are NOT a final answer: the person was never actually spoken to, or asked to be
+# rung back, so auto-retries must stay alive. Everything else closes the contact out.
+_RETRYABLE_OUTCOMES = frozenset({"callback", "voicemail", "not_reachable"})
+
+
+def extra_summary(extra) -> str:
+    """One human line for the Remark from the agent's extra capture fields.
+
+    Each agent declares its own extras (a logistics agent captures a corrected flight number,
+    a reminder agent captures nothing), so this renders whatever is present rather than
+    knowing any particular field. Keys are humanised: transport_number -> "Transport number"."""
+    if not isinstance(extra, dict):
+        return ""
+    parts = []
+    for key, value in extra.items():
+        if value in (None, "", []):
+            continue
+        label = str(key).replace("_", " ").strip().capitalize()
+        parts.append(f"{label}: {value}")
+    return "; ".join(parts)
+
+
+def _compose_remark(*parts) -> str:
+    """Remark = the agent's note plus any extra-field summary; any part may be empty."""
+    return "; ".join(p for p in ((str(p or "").strip()) for p in parts) if p)
+
+
+class CallRecorder:
+    def __init__(self, model=None):
+        self.model = model
+        self.call = None          # the persisted dict (None until open)
+        self._cur_role = None     # 'user' | 'gemini' currently buffering
+        self._cur_text = []
+        self._usage = []          # list of per-event usage snapshots
+        self._lang_decided = False
+        self._lang_counts = {"gu": 0, "hi": 0, "en": 0}   # per-turn language tally → call label at close()
+        self._closed = False
+        self._started_ts = None
+
+    # Lifecycle
+
+    async def open(self, source, call_sid=None, caller=None, generation=0, campaign_id=None,
+                   origin_call_id=None):
+        try:
+            call_id = uuid.uuid4().hex[:16]
+            if not call_sid:
+                call_sid = "web-" + uuid.uuid4().hex[:12]
+            self._started_ts = datetime.now(timezone.utc)
+            self.call = {
+                "id": call_id,
+                "call_sid": call_sid,
+                "source": source,                 # 'plivo' | 'browser'
+                "caller": caller,
+                "campaign_id": campaign_id,        # None for demo/RSVP calls; set for campaign dials
+                "origin_call_id": origin_call_id,  # set only on a callback-RESULT call → back-links home
+                "generation": int(generation or 0),  # 0=original, n=nth auto-callback redial
+                "started_at": self._started_ts.isoformat(),
+                "ended_at": None,
+                "duration_seconds": 0,
+                "language": None,
+                "status": "in_progress",
+                "booking_created": False,
+                "gemini_model": self.model,
+                "tokens": pricing._empty_tokens(),
+                "gemini_cost_usd": 0.0,
+                "twilio": {"price_usd": None, "price_unit": None,
+                           "status": None, "duration_seconds": None},
+                "total_cost_usd": 0.0,
+                "cost_estimated": False,
+                "transcript": [],
+                "tool_calls": [],
+            }
+            await store.save_call(self.call)
+            logger.info(f"Recording call {call_id} ({source}, sid={call_sid})")
+        except Exception as e:
+            logger.warning(f"CallRecorder.open failed: {e}")
+            self.call = None
+
+    async def on_event(self, event):
+        if self.call is None:
+            return
+        try:
+            etype = event.get("type")
+            if etype in ("user", "gemini"):
+                self._accumulate_turn(etype, event.get("text", ""))
+            elif etype == "tool_call":
+                self._flush_turn()
+                self._record_tool(event)
+            elif etype == "usage":
+                self._accumulate_usage(event)
+            elif etype in ("turn_complete", "interrupted"):
+                self._flush_turn()
+        except Exception as e:
+            logger.warning(f"CallRecorder.on_event failed: {e}")
+
+    async def close(self, status="completed"):
+        if self.call is None or self._closed:
+            return
+        self._closed = True
+        try:
+            self._flush_turn()
+            ended = datetime.now(timezone.utc)
+            self.call["ended_at"] = ended.isoformat()
+            if self._started_ts:
+                self.call["duration_seconds"] = max(0, int((ended - self._started_ts).total_seconds()))
+            if self.call.get("status") == "in_progress":
+                self.call["status"] = status
+            lang = self._final_language()
+            if lang:
+                self.call["language"] = lang
+
+            self.call["tokens"] = self._finalize_tokens()
+            self.call["gemini_cost_usd"] = pricing.compute_gemini_cost(self.call["tokens"])
+            total, estimated = pricing.compute_total(self.call)
+            self.call["total_cost_usd"] = total
+            self.call["cost_estimated"] = estimated
+
+            await store.save_call(self.call)
+            logger.info(
+                f"Call {self.call['id']} closed: {self.call['duration_seconds']}s, "
+                f"gemini=${self.call['gemini_cost_usd']:.6f}, total=${total:.6f}"
+            )
+
+            if self.call["source"] == "twilio" and not str(self.call["call_sid"]).startswith("web-"):
+                asyncio.create_task(self._deferred_twilio_refresh(self.call["id"], self.call["call_sid"]))
+
+            await self._backpropagate_to_origin()
+            await self._reconcile_inbound()
+        except Exception as e:
+            logger.warning(f"CallRecorder.close failed: {e}")
+
+    async def _backpropagate_to_origin(self):
+        """If this call is a callback-RESULT (has origin_call_id) and produced a final RSVP
+        outcome: resolve the ORIGIN call's callback block (link it to this result + mark it
+        completed) and roll the outcome onto the campaign contact. The origin call's OWN
+        rsvp_outcome_status is left untouched — each call record is immutable history.
+        Idempotent; never raises."""
+        try:
+            origin_id = self.call.get("origin_call_id")
+            outcome = self.call.get("rsvp_outcome_status")
+            if not origin_id or not outcome:
+                return                          # fresh inbound / demo call, or no RSVP captured
+            # (a) origin call record
+            try:
+                origin = await store.load_call(origin_id)
+            except Exception:
+                origin = None
+            if origin and origin.get("callback"):
+                cb = origin["callback"]
+                already = cb.get("result_call_id") == self.call.get("id") and cb.get("result_outcome")
+                if not already:
+                    # Call records are immutable history: only resolve/link the callback block — never overwrite the origin's own rsvp_* fields; the final per-person outcome lives on the campaign_contacts rollup.
+                    cb["result_outcome"] = outcome
+                    cb["result_call_id"] = self.call.get("id")
+                    # Resolve only on a real answer ("callback"/"voicemail" are not) and never resurrect a cancelled block
+                    if (outcome not in ("callback", "voicemail")
+                            and cb.get("status") in ("completed", "in_flight", "pending")):
+                        cb["status"] = "completed"
+                    try:
+                        await store.save_call(origin)
+                    except Exception as e:
+                        logger.warning(f"back-prop: origin save failed: {e}")
+            # (b) campaign contact: rolls up every outcome incl. "voicemail" (the generation cap stops re-scheduling, so it is the truthful final state)
+            cid = self.call.get("campaign_id")
+            caller = (self.call.get("caller") or "").strip()
+            if cid and caller:
+                try:
+                    import eo_db
+                    eo_db.cc_set_outcome_by_phone(
+                        int(cid), caller, outcome,
+                        remark=(self.call.get("remark") or self.call.get("rsvp_note") or None))
+                except Exception as e:
+                    logger.warning(f"back-prop: campaign contact update failed: {e}")
+        except Exception as e:
+            logger.warning(f"back-prop failed: {e}")
+
+    async def _reconcile_inbound(self):
+        """If this call was INBOUND (the member called US back) and captured an RSVP:
+        roll the outcome onto their campaign contact so pending auto-retries stop, and
+        cancel any pending member-requested callback for this phone — the scheduler
+        must never re-dial someone we just spoke to. Idempotent; never raises."""
+        try:
+            if (self.call or {}).get("source") != "plivo_inbound":
+                return
+            outcome = self.call.get("rsvp_outcome_status")
+            caller = (self.call.get("caller") or "").strip()
+            if not outcome or not caller:
+                return
+            cid = self.call.get("campaign_id")
+            if cid:
+                try:
+                    import eo_db
+                    # "callback"/"voicemail" are not final answers — leave retries alive for those.
+                    eo_db.cc_set_outcome_by_phone(
+                        int(cid), caller, outcome,
+                        mark_done=outcome not in _RETRYABLE_OUTCOMES,
+                        remark=(self.call.get("remark") or self.call.get("rsvp_note") or None))
+                except Exception as e:
+                    logger.warning(f"inbound reconcile: campaign contact update failed: {e}")
+            try:
+                await store.cancel_pending_callbacks_for_phone(
+                    caller, exclude_call_id=self.call.get("id"))
+            except Exception as e:
+                logger.warning(f"inbound reconcile: callback cancel failed: {e}")
+        except Exception as e:
+            logger.warning(f"inbound reconcile failed: {e}")
+
+    # Internals
+
+    def _accumulate_turn(self, role, text):
+        if not text:
+            return
+        if self._cur_role and self._cur_role != role:
+            self._flush_turn()
+        self._cur_role = role
+        self._cur_text.append(text)
+
+    def _flush_turn(self):
+        if not self._cur_role or not self._cur_text:
+            self._cur_role = None
+            self._cur_text = []
+            return
+        text = "".join(self._cur_text).strip()
+        if text:
+            self.call["transcript"].append(
+                {"role": self._cur_role, "text": text, "ts": _now_iso()}
+            )
+            if self._cur_role == "user":
+                lang = _infer_language(text)
+                if lang in self._lang_counts:
+                    self._lang_counts[lang] += 1     # every turn counts; the call label is settled at close()
+                if lang and not self._lang_decided:
+                    self.call["language"] = lang
+                    self._lang_decided = True
+        self._cur_role = None
+        self._cur_text = []
+
+    def _final_language(self):
+        """Call-level language from ALL caller turns: any Gujarati / Hindi turn labels the call (a member
+        who opens with an English "hello" and then switches must not be filed as English)."""
+        c = self._lang_counts
+        if c["gu"] and c["gu"] >= c["hi"]:
+            return "gu"
+        if c["hi"]:
+            return "hi"
+        if c["en"]:
+            return "en"
+        return self.call.get("language")
+
+    def _record_tool(self, event):
+        name = event.get("name")
+        result = event.get("result")
+        self.call["tool_calls"].append({
+            "name": name,
+            "args": event.get("args"),
+            "result": result,
+            "ts": _now_iso(),
+        })
+        if name == "record_outcome" and isinstance(result, dict):
+            status = result.get("outcome_status") or ""
+            # booking_created marks a positive outcome so the dashboard's success tiles keep working
+            # across agents: "acknowledged" for a reminder, "confirmed" for logistics.
+            if status in _POSITIVE_OUTCOMES:
+                self.call["booking_created"] = True
+            self.call["rsvp_outcome_status"] = status
+            self.call["rsvp_callback_time_text"] = result.get("callback_time_text", "") or ""
+            self.call["rsvp_do_not_contact"] = bool(result.get("do_not_contact"))
+            # Whatever this agent declared beyond the base fields, kept as one dict so a new agent
+            # never needs a schema change (see agent_tools.extra_properties).
+            extra = result.get("outcome_extra")
+            if isinstance(extra, dict) and extra:
+                self.call["outcome_extra"] = {**(self.call.get("outcome_extra") or {}), **extra}
+            # A second record_outcome usually carries no note: keep the earlier one rather than blanking it.
+            new_note = (result.get("note") or "").strip()
+            if new_note or not self.call.get("rsvp_note"):
+                self.call["rsvp_note"] = new_note
+            # Remark = the agent's note + its extra captures, so those always reach the grid;
+            # remark PATCH is blocked while in_progress, so this never clobbers a human edit
+            remark = _compose_remark(self.call["rsvp_note"],
+                                     extra_summary(self.call.get("outcome_extra")))
+            if remark:
+                self.call["remark"] = remark
+            if result.get("guest_name"):
+                self.call["rsvp_guest_name"] = result.get("guest_name")
+            if status == "callback":
+                self._schedule_callback(result)
+            else:
+                # "voicemail" deliberately schedules no callback (campaign_runner handles retries); an outcome change cancels any queued callback
+                cb = self.call.get("callback")
+                if cb and cb.get("status") == "pending":
+                    cb["status"] = "cancelled"
+
+    def _schedule_callback(self, result):
+        """Initialise the call's `callback` block; the scheduler picks it up after
+        close() persists it. Sets the dict only — never spawns a task here (sync)."""
+        try:
+            import callbacks
+            to = (self.call.get("caller") or "").strip()
+            if not to:
+                logger.info("Callback requested but no caller number; not scheduling")
+                return
+            cur_gen = int(self.call.get("generation") or 0)
+            try:
+                max_gen = int(os.getenv("CALLBACK_MAX_GENERATIONS", "1"))
+            except ValueError:
+                max_gen = 1
+            if cur_gen >= max_gen:
+                logger.info(f"Callback generation cap reached (gen={cur_gen}); not re-scheduling")
+                return
+            due_at, due_source = callbacks.compute_due_at(
+                result.get("callback_time_iso"),
+                result.get("callback_time_text") or result.get("note") or "")
+            self.call["callback"] = callbacks.new_callback_record(
+                to=to,
+                due_at=due_at,
+                source_text=result.get("callback_time_text") or "",
+                due_source=due_source,
+                origin_call_id=self.call.get("id"),
+                generation=cur_gen + 1,
+                campaign_id=self.call.get("campaign_id"),
+            )
+            logger.info(f"Scheduled callback for {to} at {due_at} (source={due_source}, gen={cur_gen + 1})")
+        except Exception as e:
+            logger.warning(f"Failed to schedule callback: {e}")
+
+    def _accumulate_usage(self, event):
+        snap = {
+            "total": int(event.get("total") or 0),
+            "thoughts": int(event.get("thoughts") or 0),
+            "in": {}, "out": {},
+        }
+        for mod, cnt in (event.get("prompt_by_modality") or []):
+            b = _in_bucket(mod)
+            snap["in"][b] = snap["in"].get(b, 0) + int(cnt or 0)
+        for mod, cnt in (event.get("response_by_modality") or []):
+            b = _out_bucket(mod)
+            snap["out"][b] = snap["out"].get(b, 0) + int(cnt or 0)
+        self._usage.append(snap)
+
+    def _finalize_tokens(self):
+        """
+        Reconcile per-event usage snapshots into final token buckets.
+
+        The Live API may report usage as per-turn increments OR as a running
+        session total. A cumulative series is strictly non-decreasing, so if the
+        `total` sequence never drops we take the LAST snapshot (the grand total);
+        otherwise we SUM the increments.
+        """
+        tokens = pricing._empty_tokens()
+        if not self._usage:
+            return tokens
+
+        totals = [e["total"] for e in self._usage]
+        non_decreasing = all(totals[i] <= totals[i + 1] for i in range(len(totals) - 1))
+        cumulative = non_decreasing and len(self._usage) > 1 and totals[-1] > 0
+
+        if cumulative:
+            chosen = [self._usage[-1]]
+        else:
+            chosen = self._usage
+
+        for snap in chosen:
+            for b, c in snap["in"].items():
+                tokens[b] += c
+            for b, c in snap["out"].items():
+                tokens[b] += c
+            tokens["thoughts"] += snap["thoughts"]
+
+        bucket_sum = (tokens["text_in"] + tokens["audio_in"] + tokens["imgvid_in"]
+                      + tokens["text_out"] + tokens["audio_out"] + tokens["thoughts"])
+        reported_total = totals[-1] if cumulative else sum(totals)
+        tokens["total"] = max(bucket_sum, reported_total)
+        return tokens
+
+    async def _deferred_twilio_refresh(self, call_id, call_sid):
+        """Fetch Twilio's real billed price after the call ends (price lags)."""
+        loop = asyncio.get_running_loop()
+        for delay in (15, 45, 120):
+            await asyncio.sleep(delay)
+            try:
+                info = await loop.run_in_executor(None, pricing.fetch_twilio_price, call_sid)
+            except Exception as e:
+                logger.warning(f"Twilio refresh error for {call_sid}: {e}")
+                info = None
+            if not info:
+                continue
+
+            call = await store.load_call(call_id)
+            if not call:
+                return
+            call["twilio"].update({
+                "price_unit": info.get("price_unit"),
+                "status": info.get("status"),
+                "duration_seconds": info.get("duration_seconds"),
+            })
+            if info.get("price_usd") is not None:
+                call["twilio"]["price_usd"] = info["price_usd"]
+                if info.get("duration_seconds"):
+                    call["duration_seconds"] = info["duration_seconds"]
+                total, estimated = pricing.compute_total(call)
+                call["total_cost_usd"] = total
+                call["cost_estimated"] = estimated
+                await store.save_call(call)
+                logger.info(f"Twilio price set for {call_id}: ${info['price_usd']}")
+                return
+            # status known but price still pending -> persist status, keep retrying
+            await store.save_call(call)
+        logger.info(f"Twilio price still unavailable for {call_id} after retries")

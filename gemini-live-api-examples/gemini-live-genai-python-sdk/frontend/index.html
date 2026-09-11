@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>7x · Event Calling</title>
+  <style>
+    :root {
+      --bg: #0b0908; --card: #171210; --border: rgba(255,240,224,.09);
+      --gold: #d4a548; --text: #faf6f0; --muted: #8a7d6e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: radial-gradient(1200px 600px at 50% -10%, #1d1713, var(--bg));
+      color: var(--text); font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      padding: 24px;
+    }
+    .card {
+      max-width: 440px; width: 100%; text-align: center; padding: 40px 32px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      box-shadow: 0 24px 60px -20px rgba(0,0,0,.8);
+    }
+    .logo {
+      width: 54px; height: 54px; margin: 0 auto 18px; border-radius: 14px;
+      display: grid; place-items: center; font-weight: 700; font-size: 1.3rem;
+      color: #241a08; background: linear-gradient(150deg, #e8c777, var(--gold));
+    }
+    h1 { margin: 0 0 6px; font-size: 1.45rem; letter-spacing: -.01em; }
+    p { margin: 0 0 24px; color: var(--muted); font-size: .92rem; line-height: 1.6; }
+    a.btn {
+      display: inline-block; padding: 11px 22px; border-radius: 10px; font-weight: 600;
+      font-size: .9rem; text-decoration: none; color: #241a08;
+      background: linear-gradient(150deg, #e8c777, var(--gold));
+    }
+    .foot { margin-top: 22px; font-size: .76rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">7x</div>
+    <h1>7x Event Calling</h1>
+    <p>
+      Voice agents that ring your guests with the right reminder, at the right time,
+      for the right function.
+    </p>
+    <a class="btn" href="/admin">Open the dashboard</a>
+    <div class="foot">Testing an agent? It lives in the Agents tab.</div>
+  </div>
+</body>
+</html>

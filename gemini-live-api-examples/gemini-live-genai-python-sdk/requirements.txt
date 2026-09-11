@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+# >=2.10 exposes async function calling (Behavior.NON_BLOCKING + FunctionResponse
+# scheduling=SILENT), the protocol-level fix that stops record_outcome from triggering
+# a duplicate spoken turn. The code feature-detects and still runs on older versions.
+google-genai>=2.10,<3
+websockets
+python-dotenv
+python-multipart
+plivo
+tzdata
+openpyxl
+# Vectorizes the real-time audio hot paths (mulaw<->PCM, VAD energy, recording mix)
+# ~50-100x, preventing event-loop stalls that break the 20ms playout pacing.
+# plivo_handler.py falls back to pure Python if numpy is missing.
+numpy
+

@@ -1,0 +1,395 @@
+"""Render an agent's prompt template against one call's wedding / event / guest rows.
+
+Deliberately dependency-light: no eo_db import, no I/O. The caller passes rows that are
+already fetched, which keeps SQLite off the render path and makes every rule here
+unit-testable in isolation.
+
+Two outputs per call, and the split matters:
+
+* ``system_instruction`` — frozen into the Live session at connect time. Carries the
+  persona plus every FACT (event, wedding, guest), so the model can *answer questions*
+  about them rather than only reciting them.
+* ``trigger`` — a text turn sent once the media stream opens. This is what makes the
+  model start speaking at all (the Live API emits no audio until it receives input),
+  so it carries the guest's name and "begin the opening now".
+
+Missing-data policy: on the live call path an unresolved placeholder becomes an empty
+string and is reported in ``missing``; it NEVER raises. A half-personalised call beats a
+dropped one on the wedding morning. An *unknown* placeholder (a typo like ``{even_name}``)
+is a different thing — an authoring bug — and is rejected when the agent is saved.
+"""
+
+import logging
+import re
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
+
+_IST = ZoneInfo("Asia/Kolkata")
+_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+)\}")
+
+_ORDINALS = {
+    1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth", 7: "seventh",
+    8: "eighth", 9: "ninth", 10: "tenth", 11: "eleventh", 12: "twelfth", 13: "thirteenth",
+    14: "fourteenth", 15: "fifteenth", 16: "sixteenth", 17: "seventeenth", 18: "eighteenth",
+    19: "nineteenth", 20: "twentieth", 21: "twenty-first", 22: "twenty-second",
+    23: "twenty-third", 24: "twenty-fourth", 25: "twenty-fifth", 26: "twenty-sixth",
+    27: "twenty-seventh", 28: "twenty-eighth", 29: "twenty-ninth", 30: "thirtieth",
+    31: "thirty-first",
+}
+
+_HOURS = {0: "twelve", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+          7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"}
+
+_MINUTES = {5: "five", 10: "ten", 15: "quarter", 20: "twenty", 25: "twenty-five",
+            30: "half", 35: "twenty-five", 40: "twenty", 45: "quarter", 50: "ten", 55: "five"}
+
+
+class PromptRenderError(ValueError):
+    """Raised only by strict rendering (agent save / preview), never on a live call."""
+
+
+# Every placeholder an agent template may use. Single source of truth for the save-time
+# validator AND the UI's placeholder palette, so the two can never drift apart.
+KNOWN_PLACEHOLDERS = frozenset({
+    # derived
+    "today_spoken", "today_iso", "now_time", "when_phrase", "days_until",
+    # wedding
+    "wedding_name", "groom_name", "bride_name", "groom_side_family", "bride_side_family",
+    "hospitality_team", "placard_text", "contact_phone", "contact_name", "wedding_city",
+    "wedding_start_date", "wedding_end_date",
+    # guest
+    "guest_name", "guest_full_name", "guest_phone", "side", "side_phrase", "dietary",
+    "transport_mode", "transport_number", "flight_number", "train_number",
+    "arrival_time", "departure_time", "hotel", "room_number", "guest_count",
+    # event
+    "event_name", "event_date", "event_date_spoken", "event_time", "event_end_time",
+    "venue", "venue_address", "dress_code", "announcement", "audience",
+})
+
+
+def _spoken_date(value):
+    """'2026-09-19' -> 'the nineteenth of September'. Blank on anything unparseable."""
+    d = _as_date(value)
+    if not d:
+        return ""
+    return f"the {_ORDINALS.get(d.day, str(d.day))} of {d.strftime('%B')}"
+
+
+def _as_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).strip()[:10]).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _spoken_time(value):
+    """'19:00' -> 'seven in the evening'; '10:30' -> 'half past ten in the morning'.
+
+    Times must never reach the model as digits — it reads them out as digits."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    m = re.match(r"^(\d{1,2})[:.](\d{2})", raw)
+    if not m:
+        return raw                      # already prose ("6 PM onwards") — leave it alone
+    hour24, minute = int(m.group(1)), int(m.group(2))
+    if not (0 <= hour24 <= 23 and 0 <= minute <= 59):
+        return raw
+    if hour24 < 12:
+        part = "in the morning"
+    elif hour24 < 16:
+        part = "in the afternoon"
+    elif hour24 < 20:
+        part = "in the evening"
+    else:
+        part = "at night"
+    hour12 = hour24 % 12
+    spoken_hour = _HOURS[hour12 if hour12 else 12]
+    if minute == 0:
+        return f"{spoken_hour} {part}"
+    if minute == 15:
+        return f"quarter past {spoken_hour} {part}"
+    if minute == 30:
+        return f"half past {spoken_hour} {part}"
+    if minute == 45:
+        nxt = _HOURS[(hour12 + 1) % 12 if (hour12 + 1) % 12 else 12]
+        return f"quarter to {nxt} {part}"
+    if minute in _MINUTES and minute < 30:
+        return f"{_MINUTES[minute]} past {spoken_hour} {part}"
+    if minute in _MINUTES and minute > 30:
+        nxt = _HOURS[(hour12 + 1) % 12 if (hour12 + 1) % 12 else 12]
+        return f"{_MINUTES[minute]} to {nxt} {part}"
+    return f"{spoken_hour} {minute} {part}"
+
+
+def _when_phrase(event_date, today):
+    """How the agent refers to the event day: 'today' / 'tomorrow' / 'on the 19th of Sept'."""
+    d = _as_date(event_date)
+    if not d or not today:
+        return ""
+    days = (d - today).days
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "tomorrow"
+    if days == -1:
+        return "yesterday"
+    spoken = _spoken_date(d)
+    return f"on {spoken}" if spoken else ""
+
+
+def _first_name(full):
+    parts = str(full or "").strip().split()
+    return parts[0] if parts else ""
+
+
+def _side_phrase(side):
+    side = str(side or "").strip().lower()
+    if side == "groom":
+        return "the groom's side"
+    if side == "bride":
+        return "the bride's side"
+    if side == "both":
+        return "both families"
+    return ""
+
+
+def _merge(dst, src):
+    """Layer src over dst, skipping empty values so a blank never shadows a real one."""
+    for key, val in (src or {}).items():
+        if val in (None, ""):
+            continue
+        dst[key] = str(val)
+
+
+def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None, extra=None):
+    """Flatten the rows into one {placeholder: str} map.
+
+    Resolution order, each layer filling only what the previous left blank:
+    derived -> wedding -> guest -> event -> extra. Event wins over guest wins over
+    wedding because a key like ``venue`` can plausibly exist on more than one row and
+    the event is the most specific."""
+    now = now or datetime.now(_IST)
+    today = now.date() if hasattr(now, "date") else None
+
+    ctx = {}
+
+    # 1. derived / global
+    _merge(ctx, {
+        "today_spoken": _spoken_date(today),
+        "today_iso": today.isoformat() if today else "",
+        "now_time": _spoken_time(now.strftime("%H:%M")) if hasattr(now, "strftime") else "",
+    })
+
+    # 2. wedding
+    w = wedding or {}
+    _merge(ctx, {
+        "wedding_name": w.get("name"),
+        "groom_name": w.get("groom_name"),
+        "bride_name": w.get("bride_name"),
+        "groom_side_family": w.get("groom_side_family"),
+        "bride_side_family": w.get("bride_side_family"),
+        "hospitality_team": w.get("hospitality_team"),
+        "placard_text": w.get("placard_text"),
+        "contact_phone": w.get("contact_phone"),
+        "contact_name": w.get("contact_name"),
+        "wedding_city": w.get("city"),
+        "wedding_start_date": _spoken_date(w.get("start_date")),
+        "wedding_end_date": _spoken_date(w.get("end_date")),
+    })
+
+    # 3. guest
+    g = guest or {}
+    mode = str(g.get("transport_mode") or "").strip().lower()
+    number = g.get("transport_number")
+    _merge(ctx, {
+        "guest_name": _first_name(g.get("name")),
+        "guest_full_name": g.get("name"),
+        "guest_phone": g.get("phone"),
+        "side": g.get("side"),
+        "side_phrase": _side_phrase(g.get("side")),
+        "dietary": g.get("dietary"),
+        "transport_mode": mode,
+        "transport_number": number,
+        # Aliases so a template can say {flight_number} without branching on mode.
+        "flight_number": number if mode == "flight" else "",
+        "train_number": number if mode == "train" else "",
+        "arrival_time": g.get("arrival_at"),
+        "departure_time": g.get("departure_at"),
+        "hotel": g.get("hotel"),
+        "room_number": g.get("room_number"),
+        "guest_count": g.get("guest_count"),
+    })
+
+    # 4. event (most specific of the rows)
+    e = event or {}
+    _merge(ctx, {
+        "event_name": e.get("name"),
+        "event_date": e.get("event_date"),
+        "event_date_spoken": _spoken_date(e.get("event_date")),
+        "event_time": _spoken_time(e.get("start_time")),
+        "event_end_time": _spoken_time(e.get("end_time")),
+        "venue": e.get("venue"),
+        "venue_address": e.get("venue_address"),
+        "dress_code": e.get("dress_code"),
+        "announcement": e.get("announcement"),
+        "audience": e.get("audience"),
+        "when_phrase": _when_phrase(e.get("event_date"), today),
+    })
+    d = _as_date(e.get("event_date"))
+    if d and today:
+        _merge(ctx, {"days_until": str((d - today).days)})
+
+    # 5. caller overrides (the Test panel's sample values)
+    _merge(ctx, extra)
+
+    return ctx
+
+
+# Prepositions/conjunctions that are left dangling when the value after them blanks out.
+# "begins at {event_time} at {venue}" with both missing must not become "begins at at."
+_DANGLING = r"(?:at|on|in|from|to|by|for|with|and|near|until|till)"
+
+
+def _tidy_line(line):
+    """Clean one line that actually lost a value. Returns '' if nothing is left to say."""
+    out = re.sub(r"[ \t]{2,}", " ", line)
+    # Collapse runs of dangling prepositions, then drop a trailing one, repeatedly:
+    # "begins at at ." -> "begins at ." -> "begins ."
+    for _ in range(4):
+        before = out
+        out = re.sub(rf"\s+{_DANGLING}(?=\s+{_DANGLING}\b)", "", out, flags=re.I)
+        out = re.sub(rf"\s+{_DANGLING}\s*(?=[.,;:!?]|$)", "", out, flags=re.I)
+        out = re.sub(r"[ \t]+([,.;:!?])", r"\1", out)
+        out = re.sub(r"([,;:])(\s*[,;:])+", r"\1", out)
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        if out == before:
+            break
+    stripped = out.strip()
+    if not stripped:
+        return ""
+    # Punctuation-only leftovers, and bullet labels whose value vanished ("- Where:").
+    if re.fullmatch(r"[-*•:,;.\s]+", stripped):
+        return ""
+    if re.fullmatch(r"[-*•]\s*[A-Za-z][\w' ()/,]{0,60}\s*[:—-]\s*[.,;]?", stripped):
+        return ""
+    return out.rstrip()
+
+
+def _tidy(text, touched_lines=None):
+    """Clean up what an empty substitution leaves behind.
+
+    A blank placeholder does not just leave a gap — it strands the words around it. The
+    model reads "begins at at." and "- Where:" aloud verbatim, so those have to go before
+    the prompt is ever spoken. A fact line that lost its only fact is dropped whole rather
+    than left as a bare label.
+
+    Only lines that ACTUALLY lost a placeholder are rewritten (``touched_lines``). Prose
+    the template author wrote is never touched — otherwise a heading like
+    "## WHO YOU ARE SPEAKING TO" loses its trailing "TO", and a line ending in a colon
+    ("Branch on their reply:") gets deleted as an empty label."""
+    lines = []
+    for idx, raw in enumerate(text.split("\n")):
+        if not raw.strip():
+            lines.append("")
+            continue
+        if touched_lines is not None and idx not in touched_lines:
+            lines.append(raw.rstrip())
+            continue
+        cleaned = _tidy_line(raw)
+        if cleaned:
+            lines.append(cleaned)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def render(template, ctx, *, strict=False):
+    """Substitute {placeholders}. Returns (rendered_text, sorted_missing_names).
+
+    strict=True raises PromptRenderError instead of blanking — used by the save-time
+    validator and the preview, never by the live call path."""
+    template = template or ""
+    missing = set()
+    unknown = set()
+    # Which output lines lost a value — only those get the punctuation cleanup, so the
+    # author's own prose is never rewritten.
+    blanked_offsets = []
+
+    def _sub(match):
+        name = match.group(1)
+        if name not in KNOWN_PLACEHOLDERS:
+            unknown.add(name)
+            if strict:
+                return match.group(0)
+            blanked_offsets.append(match.start())
+            return ""
+        value = ctx.get(name, "")
+        if value in (None, ""):
+            missing.add(name)
+            blanked_offsets.append(match.start())
+            return ""
+        return str(value)
+
+    out = _PLACEHOLDER_RE.sub(_sub, template)
+    if strict and unknown:
+        raise PromptRenderError(
+            "unknown placeholder(s): " + ", ".join(f"{{{n}}}" for n in sorted(unknown)))
+    if unknown:
+        # Not fatal on the live path, but it means an agent was saved before validation
+        # existed — surface it loudly rather than silently speaking a gap.
+        logger.warning("prompt_render: unknown placeholders ignored: %s", sorted(unknown))
+
+    # Map template offsets to line numbers; substitution never adds or removes newlines,
+    # so line indices are stable between template and output.
+    touched = {template.count("\n", 0, off) for off in blanked_offsets}
+    return _tidy(out, touched), sorted(missing)
+
+
+def validate_template(template):
+    """Placeholders in a template that are not in the known vocabulary. Empty = valid."""
+    return sorted({n for n in _PLACEHOLDER_RE.findall(template or "")
+                   if n not in KNOWN_PLACEHOLDERS})
+
+
+def render_prompt(agent, *, wedding=None, event=None, guest=None, now=None, extra=None):
+    """The one function the call path uses.
+
+    Returns {"system_instruction", "trigger", "missing", "context"}. Never raises: a
+    missing placeholder is reported, not fatal."""
+    agent = agent or {}
+    ctx = build_context(wedding=wedding, event=event, guest=guest, agent=agent,
+                        now=now, extra=extra)
+
+    system_instruction, missing_prompt = render(agent.get("prompt_template") or "", ctx)
+    trigger, missing_trigger = render(agent.get("trigger_template") or "", ctx)
+
+    if not trigger:
+        # Every agent needs SOMETHING to open with — the Live API produces no audio until
+        # it receives a turn. Fall back to a name-aware generic opening.
+        name = ctx.get("guest_name") or ""
+        if name:
+            trigger = (f"[The guest has just answered. Their first name is {name}. Begin your "
+                       f'opening: your first turn is EXACTLY "Hello Sir or Ma\'am, am I speaking '
+                       f'with {name}?" — say ONLY that, then STOP and wait.]')
+        else:
+            trigger = ("[The guest has just answered. You were NOT given their name — never "
+                       "invent one. Greet them warmly, say who you are calling on behalf of, "
+                       "and continue with the purpose of your call.]")
+
+    missing = sorted(set(missing_prompt) | set(missing_trigger))
+    if missing:
+        logger.warning("prompt_render: agent=%s event=%s unresolved placeholders: %s",
+                       agent.get("slug") or agent.get("id"),
+                       (event or {}).get("id"), missing)
+
+    return {
+        "system_instruction": system_instruction,
+        "trigger": trigger,
+        "missing": missing,
+        "context": ctx,
+    }

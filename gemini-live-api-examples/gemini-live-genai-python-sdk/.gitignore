@@ -1,0 +1,14 @@
+__pycache__
+.venv
+.env
+
+# Call-log JSON store + SQLite db (runtime data, never committed)
+data/
+data-*/
+*.db
+*.db-wal
+*.db-shm
+*.eo-backup
+_serve_data/
+_smoke_data/
+_smoke_test.py
