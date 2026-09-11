@@ -265,3 +265,35 @@ def test_an_agent_user_cannot_see_another_owners_wedding(api):
     assert client.get(f"/api/eo/weddings/{api['wedding']['id']}", headers=h2).status_code == 404
     assert client.patch(f"/api/eo/weddings/{api['wedding']['id']}", headers=h2,
                         json={"city": "X"}).status_code == 404
+
+
+def test_test_call_rejects_a_bad_number_instead_of_500ing(api, monkeypatch):
+    """eo_import.normalize_phone returns (e164, is_valid). A bare tuple is truthy, so
+    forgetting to unpack it sails past the validity check and explodes inside quote()
+    with a TypeError — a 500 on the operator's "Call me" button."""
+    c, h = api["client"], api["h"]
+    for bad in ("", "not-a-number", "12"):
+        r = c.post(f"/api/eo/agents/{api['logistics']['id']}/test-call", headers=h,
+                   json={"phone": bad, "wedding_id": api["wedding"]["id"]})
+        assert r.status_code == 400, f"{bad!r} gave {r.status_code}, expected 400"
+        assert "valid phone" in r.json()["detail"].lower()
+
+
+def test_test_call_passes_a_normalised_number_to_the_dialer(api, monkeypatch):
+    import dialer
+    seen = {}
+
+    async def fake_place_call(phone, **kw):
+        seen["phone"] = phone
+        seen["agent_id"] = kw.get("agent_id")
+        return {"success": True, "call_uuid": "u1"}
+
+    monkeypatch.setattr(dialer, "place_call", fake_place_call)
+    r = api["client"].post(f"/api/eo/agents/{api['logistics']['id']}/test-call",
+                           headers=api["h"],
+                           json={"phone": "9876543210",
+                                 "wedding_id": api["wedding"]["id"]})
+    assert r.status_code == 200
+    # a plain E.164 string, never the (e164, is_valid) tuple
+    assert seen["phone"] == "+919876543210"
+    assert isinstance(seen["phone"], str)

@@ -894,8 +894,9 @@ async def agents_test_call(agent_id: int, request: Request):
     user = eo_auth.require_eo(request)
     agent = _agent_or_404(user, agent_id)
     body = await request.json()
-    phone = eo_import.normalize_phone(body.get("phone"))
-    if not phone:
+    # normalize_phone returns (e164, is_valid) — a bare tuple is truthy, so unpack it.
+    phone, phone_valid = eo_import.normalize_phone(body.get("phone"))
+    if not phone or not phone_valid:
         raise HTTPException(status_code=400, detail="A valid phone number is required")
     event = _event_or_404(user, body["event_id"]) if body.get("event_id") else None
     wedding_id = body.get("wedding_id") or (event or {}).get("wedding_id") or agent.get("wedding_id")
