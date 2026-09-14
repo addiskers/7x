@@ -1,11 +1,11 @@
-"""Seed the Anant & Manya demo wedding: events, one guest, and reminder campaigns.
+"""Seed the Manya & Anant wedding (Fairmont, Udaipur) from the client's itinerary.
 
-Development helper for testing P2 before the Agents/Events UI exists (P4). Idempotent —
-re-running updates the same wedding rather than creating a second one.
+Idempotent — re-running updates the same wedding and events rather than duplicating.
 
-    python seed_demo_wedding.py                      # seed only
-    python seed_demo_wedding.py --phone +9198...     # seed, then set that guest's number
-    python seed_demo_wedding.py --preview saanth     # print the rendered prompt and exit
+    python seed_demo_wedding.py                      # seed
+    python seed_demo_wedding.py --phone +9198...     # seed + set the sample guest's number
+    python seed_demo_wedding.py --preview saanth     # print the rendered script and exit
+    python seed_demo_wedding.py --list               # show the event keys
 """
 
 import argparse
@@ -15,26 +15,61 @@ import eo_auth
 import eo_db
 import prompt_render
 
-WEDDING_NAME = "Anant & Manya"
+WEDDING_NAME = "Manya & Anant"
 
-# The client's schedule. audience: all | groom | bride.
+# From the client's itinerary. Only functions guests should be REMINDED about are here:
+# breakfasts, hi-teas, arrivals and check-outs are hotel logistics, not call-worthy, and
+# ringing someone about breakfast three mornings running is how a guest list gets annoyed.
+#
+# (key, name, date, start "HH:MM", venue, audience)
 EVENTS = [
-    # (key,          name,                              date,         start,  venue,                            audience)
-    ("ghazal",   "Ghazal Night",                     "2026-09-19", "19:00", "Infinity Terrace",               "all"),
-    ("mehendi",  "Mehendi & Haldi followed by Lunch", "2026-09-20", "13:00", "Ivory Garden & Pool",            "all"),
-    ("saanth",   "Saanth ritual followed by Lunch",   "2026-09-21", "10:30", "The Imperial Ballroom & Terrace", "groom"),
-    ("chuda",    "Chuda Ceremony followed by Lunch",  "2026-09-21", "12:30", "The Imperial Ballroom & Terrace", "bride"),
-    ("baraat",   "Hi Tea & Safa Bandhai followed by Baraat Procession",
-                                                     "2026-09-21", "18:00", "The Sheesh Mahal",               "groom"),
-    ("swagat",   "Safa Bandhai followed by Baraat Swagat",
-                                                     "2026-09-21", "19:00", "The Jashn Palace",               "bride"),
-    ("cocktail", "Cocktail followed by Dinner",       "2026-09-21", "20:00", "The Jewel",                      "all"),
-    ("wedding",  "Wedding Ceremony",                  "2026-09-21", "22:00", "Chand Baori",                    "all"),
+    # --- 19 September ---
+    ("ghazal",    "Ghazal Night & Dinner",
+     "2026-09-19", "19:00", "Infinity Terrace", "all"),
+
+    # --- 20 September ---
+    ("mehendi",   "Mehendi & Haldi followed by Lunch",
+     "2026-09-20", "12:00", "Ivory Garden & Pool", "all"),
+    ("cocktail",  "Cocktail followed by Dinner",
+     "2026-09-20", "19:30", "The Jewel", "all"),
+
+    # --- 21 September, the wedding day ---
+    ("saanth",    "Saanth",
+     "2026-09-21", "11:00", "Imperial Terrace", "groom"),
+    ("chuda",     "Chuda Ceremony",
+     "2026-09-21", "12:30", "Imperial Ballroom & Terrace", "bride"),
+    ("sehrabandhi", "Hi-Tea & Sehrabandhi",
+     "2026-09-21", "18:00", "Sheesh Mahal", "groom"),
+    ("baraat",    "Baraat Procession",
+     "2026-09-21", "18:15", "Panther Patio", "groom"),
+    ("swagat",    "Safa Bandhi & Baraat Swagat",
+     "2026-09-21", "19:30", "Jashn Palace Garden", "bride"),
+    ("milni",     "Milni",
+     "2026-09-21", "19:45", "Jashn Palace Garden", "all"),
+    ("varmala",   "Varmala",
+     "2026-09-21", "20:00", "Jashn Palace Garden", "all"),
+    ("reception", "Reception",
+     "2026-09-21", "20:45", "Jashn Palace Garden", "all"),
+    ("wedding",   "Wedding Ceremony",
+     "2026-09-21", "22:30", "Chand Baori", "all"),
+    ("vidaai",    "Vidaai",
+     "2026-09-22", "00:30", "Chand Baori", "all"),
 ]
 
+# Announcements for the few functions where the itinerary says more than time + venue.
+ANNOUNCEMENTS = {
+    "mehendi":  "Lunch follows the Mehendi and Haldi.",
+    "cocktail": "Dinner follows at nine, and there is an after-party later at the same venue.",
+    "saanth":   "Lunch follows at half past twelve in the Imperial Ballroom.",
+    "chuda":    "Lunch follows at half past twelve in the Imperial Ballroom.",
+    "vidaai":   "The Vidaai is just after midnight, at the close of the wedding night.",
+}
+
+# One sample guest so the Test panel has someone to render against. Replace with the
+# real guest list via Create Campaign -> upload.
 GUESTS = [
-    # name,           phone,            side,    dietary,      mode,     number,   arrival,                      hotel
-    ("Rajesh Kumar", "+919876543210", "groom", "vegetarian", "flight", "AI 456", "2:30 PM on 19 September", "Fairmont Udaipur"),
+    ("Rajesh Kumar", "+919876543210", "groom", "vegetarian", "flight", "AI 456",
+     "2:30 PM on 19 September", "22 September", "Fairmont Udaipur"),
 ]
 
 
@@ -50,15 +85,15 @@ def seed(phone=None):
     eo_db.init()
     owner = _owner()
 
-    existing = [w for w in eo_db.list_weddings() if w["name"] == WEDDING_NAME]
     fields = dict(
         groom_name="Anant", bride_name="Manya",
-        groom_side_family="Kapoor Family", bride_side_family="Chopra Family",
         start_date="2026-09-19", end_date="2026-09-22", city="Udaipur",
-        hospitality_team="Anant and Manya's Wedding Hospitality team",
-        placard_text="Kapoor & Chopra Family Welcomes You",
-        contact_phone="+91 98123 45678", contact_name="Rohit, our hospitality lead",
+        hospitality_team="Manya and Anant's Wedding Hospitality team",
+        placard_text="Manya & Anant Wedding — Welcome",
+        contact_phone="", contact_name="",
+        notes="Fairmont, Udaipur. 19-22 September 2026.",
     )
+    existing = [w for w in eo_db.list_weddings() if w["name"] == WEDDING_NAME]
     if existing:
         wid = existing[0]["id"]
         eo_db.update_wedding(wid, **fields)
@@ -70,21 +105,23 @@ def seed(phone=None):
     by_name = {e["name"]: e for e in eo_db.list_events(wid)}
     keys = {}
     for order, (key, name, edate, start, venue, audience) in enumerate(EVENTS):
+        common = dict(event_date=edate, start_time=start, venue=venue,
+                      audience=audience, sort_order=order,
+                      announcement=ANNOUNCEMENTS.get(key, ""))
         if name in by_name:
             eid = by_name[name]["id"]
-            eo_db.update_event(eid, event_date=edate, start_time=start, venue=venue,
-                               audience=audience, sort_order=order)
+            eo_db.update_event(eid, **common)
         else:
-            eid = eo_db.create_event(wid, name, event_date=edate, start_time=start,
-                                     venue=venue, audience=audience, sort_order=order)
+            eid = eo_db.create_event(wid, name, **common)
         keys[key] = eid
     print(f"{len(EVENTS)} events seeded")
 
     rows = []
-    for name, default_phone, side, diet, mode, number, arrival, hotel in GUESTS:
+    for name, default_phone, side, diet, mode, number, arrival, departure, hotel in GUESTS:
         rows.append((name, phone or default_phone, "valid", {
             "side": side, "dietary": diet, "transport_mode": mode,
-            "transport_number": number, "arrival_at": arrival, "hotel": hotel}))
+            "transport_number": number, "arrival_at": arrival,
+            "departure_at": departure, "hotel": hotel}))
     added, updated = eo_db.bulk_upsert_contacts(rows, source="manual",
                                                 created_by=owner, wedding_id=wid)
     print(f"guests: {added} added, {updated} updated"
@@ -111,13 +148,17 @@ def preview(wid, event_id, agent, owner):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phone", help="set the demo guest's number, e.g. +919876543210")
-    ap.add_argument("--preview", metavar="EVENT_KEY",
-                    help="print the rendered prompt for one event: "
-                         + ", ".join(k for k, *_ in EVENTS))
+    ap.add_argument("--phone", help="set the sample guest's number, e.g. +919876543210")
+    ap.add_argument("--preview", metavar="EVENT_KEY", help="print the rendered prompt")
     ap.add_argument("--logistics", action="store_true",
                     help="with --preview, render the logistics agent instead")
+    ap.add_argument("--list", action="store_true", help="list the event keys and exit")
     args = ap.parse_args()
+
+    if args.list:
+        for key, name, edate, start, venue, audience in EVENTS:
+            print(f"  {key:12} {edate}  {start}  {audience:6}  {name} — {venue}")
+        return
 
     wid, keys, owner, reminder, logistics = seed(args.phone)
 
@@ -127,18 +168,9 @@ def main():
         preview(wid, keys[args.preview], logistics if args.logistics else reminder, owner)
         return
 
-    guests = eo_db.guests_for_audience(wid, "all", created_by=owner)
-    print("\nTo hear it on your phone, with the server running:")
-    print(f"""
-  curl -X POST http://localhost:8000/call-me \\
-    -H "Content-Type: application/json" \\
-    -d '{{"phone": "{guests[0]['phone'] if guests else '+91XXXXXXXXXX'}",
-          "agent_id": {reminder['id']},
-          "event_id": {keys['saanth']},
-          "guest_id": {guests[0]['id'] if guests else 1},
-          "wedding_id": {wid}}}'
-""")
-    print("Event ids: " + ", ".join(f"{k}={v}" for k, v in keys.items()))
+    print("\nEvent ids: " + ", ".join(f"{k}={v}" for k, v in keys.items()))
+    print("\nNext: open /admin -> Weddings -> Manya & Anant, then Agents -> "
+          "Event Reminder -> Show the script.")
 
 
 if __name__ == "__main__":
