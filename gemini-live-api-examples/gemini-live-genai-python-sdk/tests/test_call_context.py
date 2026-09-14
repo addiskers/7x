@@ -93,15 +93,29 @@ def test_the_rendered_prompt_carries_this_events_facts(wedding_world):
 
 
 def test_two_events_produce_two_different_prompts(wedding_world):
-    """The whole point of the rebuild: one agent, many events."""
+    """The whole point of the rebuild: one agent, many events.
+
+    Both prompts now carry the FULL schedule — the agent must be able to answer "and what
+    time is the Mehendi?" — so the difference is in which event each call is ABOUT, not in
+    which events it has heard of."""
     w = wedding_world
     saanth = main._resolve_call_context(agent_id=w["agent"]["id"], event_id=w["saanth"],
                                         wedding_id=w["wedding"])["system_instruction"]
     ghazal = main._resolve_call_context(agent_id=w["agent"]["id"], event_id=w["ghazal"],
                                         wedding_id=w["wedding"])["system_instruction"]
-    assert "Saanth Ritual" in saanth and "Ghazal Night" not in saanth
-    assert "Ghazal Night" in ghazal and "Saanth Ritual" not in ghazal
+    assert saanth != ghazal
+
+    def about(prompt):
+        """The function named in THE ONE EVENT block — what this call is for."""
+        block = prompt.split("## THE ONE EVENT YOU ARE CALLING ABOUT")[1]
+        return block.split("\n")[1]
+
+    assert "Saanth Ritual" in about(saanth) and "Ghazal Night" not in about(saanth)
+    assert "Ghazal Night" in about(ghazal) and "Saanth Ritual" not in about(ghazal)
     assert "seven in the evening" in ghazal
+
+    # ...and each still knows the other function, so a guest question has an answer.
+    assert "Ghazal Night" in saanth and "Saanth Ritual" in ghazal
 
 
 def test_the_campaign_row_backfills_missing_params(wedding_world):

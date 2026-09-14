@@ -197,3 +197,139 @@ def test_render_prompt_never_raises_on_a_missing_row():
                          now=NOW)
     assert r["system_instruction"]
     assert set(r["missing"]) == {"guest_name", "event_name", "venue"}
+
+
+# ------------------------------------------------------------------------------ schedule
+SCHEDULE_EVENTS = [
+    {"id": 1, "name": "Ghazal Night", "event_date": "2026-09-19", "start_time": "19:00",
+     "venue": "Infinity Terrace", "audience": "all"},
+    {"id": 2, "name": "Saanth", "event_date": "2026-09-21", "start_time": "11:00",
+     "venue": "Imperial Terrace", "audience": "groom"},
+    {"id": 3, "name": "Chuda Ceremony", "event_date": "2026-09-21", "start_time": "12:30",
+     "venue": "Imperial Ballroom", "audience": "bride"},
+    {"id": 4, "name": "Wedding Ceremony", "event_date": "2026-09-21", "start_time": "22:30",
+     "venue": "Chand Baori", "audience": "all"},
+]
+
+
+def test_schedule_is_filtered_to_the_guests_own_side():
+    """A bride-side guest must never be told about a groom-only ritual — it is not theirs
+    to attend."""
+    groom = pr.build_schedule(SCHEDULE_EVENTS, side="groom")
+    assert "Saanth" in groom and "Chuda Ceremony" not in groom
+
+    bride = pr.build_schedule(SCHEDULE_EVENTS, side="bride")
+    assert "Chuda Ceremony" in bride and "Saanth" not in bride
+
+    # everyone-events are on both
+    for s in (groom, bride):
+        assert "Ghazal Night" in s and "Wedding Ceremony" in s
+
+
+def test_a_guest_with_no_recorded_side_still_gets_every_function():
+    """Matches eo_db.guests_for_audience: a blank side in the sheet must not silently hide
+    a guest's own schedule from them."""
+    for blank in ("", None, "both"):
+        s = pr.build_schedule(SCHEDULE_EVENTS, side=blank)
+        assert "Saanth" in s and "Chuda Ceremony" in s, f"side={blank!r}"
+
+
+def test_schedule_times_are_spoken_never_digits():
+    s = pr.build_schedule(SCHEDULE_EVENTS, side="groom")
+    assert "seven in the evening" in s
+    assert "half past ten at night" in s
+    for digits in ("19:00", "11:00", "22:30"):
+        assert digits not in s
+
+
+def test_schedule_notes_the_side_only_when_it_narrows_who_is_invited():
+    s = pr.build_schedule(SCHEDULE_EVENTS, side="")
+    assert "Saanth" in s
+    saanth_line = next(l for l in s.splitlines() if "Saanth" in l)
+    ghazal_line = next(l for l in s.splitlines() if "Ghazal" in l)
+    assert "groom's-side" in saanth_line
+    assert "side" not in ghazal_line          # an all-guests function needs no label
+
+
+def test_schedule_marks_the_event_this_call_is_about():
+    s = pr.build_schedule(SCHEDULE_EVENTS, side="groom", current_event_id=2)
+    saanth_line = next(l for l in s.splitlines() if "Saanth" in l)
+    assert "calling about" in saanth_line
+
+
+def test_schedule_uses_relative_days_when_today_is_known():
+    from datetime import date
+    s = pr.build_schedule(SCHEDULE_EVENTS, side="groom", today=date(2026, 9, 20))
+    assert "yesterday" in s          # Ghazal on the 19th
+    assert "tomorrow" in s           # Saanth on the 21st
+
+
+def test_schedule_reaches_the_context_and_counts_only_attendable_events():
+    ctx = pr.build_context(wedding=WEDDING, event=SCHEDULE_EVENTS[1], guest=GUEST,
+                           now=NOW, events=SCHEDULE_EVENTS)
+    assert "Saanth" in ctx["schedule"]
+    assert "Chuda" not in ctx["schedule"]      # GUEST is groom-side
+    assert ctx["event_count"] == "3"           # 2 all-guests + 1 groom
+
+
+def test_no_events_leaves_schedule_missing_rather_than_blank_text():
+    r = pr.render_prompt({"prompt_template": "Schedule:\n{schedule}"}, guest=GUEST, now=NOW)
+    assert "schedule" in r["missing"]
+
+
+def test_guest_can_attend_matches_the_db_audience_rule():
+    for audience, side, expected in [
+        ("all", "groom", True), ("all", "", True),
+        ("groom", "groom", True), ("groom", "bride", False),
+        ("bride", "bride", True), ("bride", "groom", False),
+        ("groom", "both", True), ("bride", "both", True),
+        ("groom", "", True), ("bride", "", True),        # unknown side sees everything
+    ]:
+        assert pr.guest_can_attend({"audience": audience}, side) is expected, (audience, side)
+
+
+# ------------------------------------------------- shipped templates: client regressions
+# Each of these pins a specific complaint from the client's live test calls. They assert
+# on the template TEXT because that is where every one of these bugs actually lived.
+def _shipped():
+    import agent_seeds
+    return {s["slug"]: s for s in agent_seeds.SEEDS}
+
+
+def test_no_agent_ever_says_sir_or_maam_aloud():
+    """"Sir/Ma'am dono bol raha hai" — the prompt used to literally instruct it to."""
+    for slug, seed in _shipped().items():
+        opening = seed["prompt_template"].split("## THE OPENING")[-1][:400]
+        assert "Sir or Ma'am, am I speaking" not in opening, slug
+        assert "Sir or Ma'am" not in seed["trigger_template"], slug
+
+
+def test_the_reminder_agent_may_discuss_other_functions():
+    """"event details vala kisi or event ki details nahi de raha" — caused by an explicit
+    prohibition in the prompt."""
+    seed = _shipped()["event_reminder"]
+    assert "Do NOT volunteer details about any other function" not in seed["prompt_template"]
+    assert "{schedule}" in seed["prompt_template"]
+
+
+def test_both_agents_escalate_instead_of_hanging_up():
+    """"koi person ke sath baat karane ko bolu to end ho jata hai" and "out of context
+    puchta hai to call end ho jata hai"."""
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
+        assert "I will notify {hospitality_team}" in t, slug
+        assert "SPEAK TO A PERSON" in t, slug
+        assert "NONE of these is a reason to end the call" in t, slug
+
+
+def test_the_logistics_agent_can_answer_about_the_guests_stay():
+    """"room no or stay k regarding, it is not able to answer"."""
+    t = _shipped()["logistics_concierge"]["prompt_template"]
+    assert "{room_number}" in t and "{hotel}" in t
+    assert "THEIR STAY" in t
+    assert "Do NOT list the functions" not in t
+
+
+def test_the_reminder_agent_listens_long_enough_to_hear_a_question():
+    """At 6s it hung up while guests were still asking."""
+    assert _shipped()["event_reminder"]["listen_seconds"] >= 12

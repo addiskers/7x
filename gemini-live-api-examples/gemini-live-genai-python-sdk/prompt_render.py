@@ -66,6 +66,8 @@ KNOWN_PLACEHOLDERS = frozenset({
     # event
     "event_name", "event_date", "event_date_spoken", "event_time", "event_end_time",
     "venue", "venue_address", "dress_code", "announcement", "audience",
+    # the whole wedding's schedule, filtered to what THIS guest is invited to
+    "schedule", "event_count",
 })
 
 
@@ -149,6 +151,66 @@ def _first_name(full):
     return parts[0] if parts else ""
 
 
+def guest_can_attend(event, side):
+    """Is this guest invited to this function?
+
+    Matches eo_db.guests_for_audience deliberately: an 'all' event is for everyone, a
+    side-specific one is for that side plus anyone marked 'both' — and a guest whose side
+    was never recorded gets EVERYTHING. A blank side in the sheet must not silently hide a
+    guest's own schedule from them."""
+    audience = str((event or {}).get("audience") or "all").strip().lower()
+    if audience not in ("groom", "bride"):
+        return True
+    side = str(side or "").strip().lower()
+    if side in ("", "both"):
+        return True
+    return side == audience
+
+
+def build_schedule(events, *, side=None, today=None, current_event_id=None):
+    """The guest's functions as spoken-ready lines the agent can answer questions from.
+
+        - Ghazal Night - tomorrow, seven in the evening, Infinity Terrace
+        - Saanth - on the twenty-first of September, eleven in the morning, Imperial
+          Terrace (a groom's-side ritual)
+
+    Side-filtered per guest_can_attend. Times and dates go through the same spoken
+    helpers as everything else — the model must never read a schedule out as digits."""
+    lines = []
+    for e in events or []:
+        if not guest_can_attend(e, side):
+            continue
+        name = str(e.get("name") or "").strip()
+        if not name:
+            continue
+        parts = []
+        when = _when_phrase(e.get("event_date"), today) if today else ""
+        if not when:
+            when = _spoken_date(e.get("event_date"))
+            when = f"on {when}" if when else ""
+        if when:
+            parts.append(when)
+        spoken_time = _spoken_time(e.get("start_time"))
+        if spoken_time:
+            parts.append(spoken_time)
+        venue = str(e.get("venue") or "").strip()
+        if venue:
+            parts.append(venue)
+        line = f"- {name}"
+        if parts:
+            line += " - " + ", ".join(parts)
+        # Note the side only when it actually narrows who is invited (decision 2).
+        audience = str(e.get("audience") or "all").strip().lower()
+        if audience == "groom":
+            line += " (a groom's-side function)"
+        elif audience == "bride":
+            line += " (a bride's-side function)"
+        if current_event_id is not None and e.get("id") == current_event_id:
+            line += "  <- the one you are calling about"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _side_phrase(side):
     side = str(side or "").strip().lower()
     if side == "groom":
@@ -168,13 +230,18 @@ def _merge(dst, src):
         dst[key] = str(val)
 
 
-def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None, extra=None):
+def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None, extra=None,
+                  events=None):
     """Flatten the rows into one {placeholder: str} map.
 
     Resolution order, each layer filling only what the previous left blank:
     derived -> wedding -> guest -> event -> extra. Event wins over guest wins over
     wedding because a key like ``venue`` can plausibly exist on more than one row and
-    the event is the most specific."""
+    the event is the most specific.
+
+    ``events`` is the wedding's whole function list; it becomes {schedule}, filtered to
+    what this guest is invited to, so the agent can answer "what time is the Mehendi?"
+    instead of deflecting."""
     now = now or datetime.now(_IST)
     today = now.date() if hasattr(now, "date") else None
 
@@ -246,7 +313,17 @@ def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None,
     if d and today:
         _merge(ctx, {"days_until": str((d - today).days)})
 
-    # 5. caller overrides (the Test panel's sample values)
+    # 5. the guest's whole schedule, so an "and what about the Mehendi?" has an answer
+    if events:
+        side = g.get("side")
+        attending = [ev for ev in events if guest_can_attend(ev, side)]
+        _merge(ctx, {
+            "schedule": build_schedule(events, side=side, today=today,
+                                       current_event_id=e.get("id")),
+            "event_count": str(len(attending)) if attending else "",
+        })
+
+    # 6. caller overrides (the Test panel's sample values)
     _merge(ctx, extra)
 
     return ctx
@@ -356,14 +433,15 @@ def validate_template(template):
                    if n not in KNOWN_PLACEHOLDERS})
 
 
-def render_prompt(agent, *, wedding=None, event=None, guest=None, now=None, extra=None):
+def render_prompt(agent, *, wedding=None, event=None, guest=None, now=None, extra=None,
+                  events=None):
     """The one function the call path uses.
 
     Returns {"system_instruction", "trigger", "missing", "context"}. Never raises: a
     missing placeholder is reported, not fatal."""
     agent = agent or {}
     ctx = build_context(wedding=wedding, event=event, guest=guest, agent=agent,
-                        now=now, extra=extra)
+                        now=now, extra=extra, events=events)
 
     system_instruction, missing_prompt = render(agent.get("prompt_template") or "", ctx)
     trigger, missing_trigger = render(agent.get("trigger_template") or "", ctx)

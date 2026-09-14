@@ -331,8 +331,13 @@ def _resolve_call_context(agent_id=None, event_id=None, guest_id=None, wedding_i
             guest = eo_db.contact_by_phone(caller, wedding_id=wid)
         ctx["guest"] = guest
 
+        # The wedding's whole function list, so the agent can answer "what time is the
+        # Mehendi?" instead of deflecting. Cached like the other rows — a six-campaign
+        # burst must not re-read it per dial on the answer-webhook path.
+        events = _cached("events", wid, eo_db.list_events) if wid else None
+
         rendered = prompt_render.render_prompt(
-            agent, wedding=ctx["wedding"], event=event, guest=guest)
+            agent, wedding=ctx["wedding"], event=event, guest=guest, events=events)
         ctx["system_instruction"] = rendered["system_instruction"]
         ctx["trigger"] = rendered["trigger"]
         ctx["missing"] = rendered["missing"]

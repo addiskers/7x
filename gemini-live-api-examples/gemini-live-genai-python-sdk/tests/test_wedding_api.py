@@ -297,3 +297,38 @@ def test_test_call_passes_a_normalised_number_to_the_dialer(api, monkeypatch):
     # a plain E.164 string, never the (e164, is_valid) tuple
     assert seen["phone"] == "+919876543210"
     assert isinstance(seen["phone"], str)
+
+
+def test_preview_lets_the_agent_answer_about_other_functions(api):
+    """The Test panel must show the same schedule a live call would have."""
+    r = api["client"].post(f"/api/eo/agents/{api['reminder']['id']}/preview",
+                           headers=api["h"],
+                           json={"event_id": api["saanth"]["id"],
+                                 "wedding_id": api["wedding"]["id"]}).json()
+    si = r["system_instruction"]
+    # the call is about Saanth, but Ghazal Night is on the schedule to answer from
+    assert "Saanth Ritual" in si
+    assert "Ghazal Night" in si
+    assert "seven in the evening" in si
+
+
+def test_refresh_agents_updates_the_shipped_rows_but_not_a_wedding_copy(api):
+    """init() seeding never overwrites, so a deploy does not pick up prompt changes;
+    --refresh-agents does — without touching an operator's own duplicate."""
+    import seed_demo_wedding
+    db, c, h = api["eo_db"], api["client"], api["h"]
+
+    mine = c.post(f"/api/eo/agents/{api['reminder']['id']}/duplicate", headers=h,
+                  json={"wedding_id": api["wedding"]["id"], "name": "Ours"}).json()
+    c.patch(f"/api/eo/agents/{mine['id']}", headers=h,
+            json={"prompt_template": "MY OWN WORDING"})
+    db.update_agent(api["reminder"]["id"], prompt_template="stale")
+
+    seed_demo_wedding.refresh_agents()
+
+    import agent_seeds
+    shipped = {s["slug"]: s for s in agent_seeds.SEEDS}
+    assert db.get_agent_by_slug("event_reminder")["prompt_template"] == \
+        shipped["event_reminder"]["prompt_template"]
+    # the wedding's own copy is theirs and must survive untouched
+    assert db.get_agent(mine["id"])["prompt_template"] == "MY OWN WORDING"

@@ -133,11 +133,42 @@ def seed(phone=None):
     return wid, keys, owner, reminder, logistics
 
 
+def refresh_agents():
+    """Update the shipped global agent templates in place from agent_seeds.SEEDS.
+
+    init()'s seeding is idempotent by slug and deliberately never overwrites an existing
+    row, so a deploy does NOT pick up prompt changes. This does — but only for the global
+    (wedding_id IS NULL) rows. A wedding's own duplicate is the operator's, and stays."""
+    import agent_seeds
+    eo_db.init()
+    for seed in agent_seeds.SEEDS:
+        row = eo_db.get_agent_by_slug(seed["slug"])          # global row only
+        if not row or row.get("wedding_id") is not None:
+            print(f"  {seed['slug']}: no global row, skipped")
+            continue
+        eo_db.update_agent(row["id"],
+                           name=seed["name"], kind=seed["kind"],
+                           description=seed.get("description", ""),
+                           prompt_template=seed["prompt_template"],
+                           trigger_template=seed.get("trigger_template", ""),
+                           outcome_enum=seed.get("outcome_enum", "[]"),
+                           extra_fields=seed.get("extra_fields", "[]"),
+                           listen_seconds=int(seed.get("listen_seconds", 0)),
+                           requires_event=int(seed.get("requires_event", 1)))
+        print(f"  {seed['slug']}: updated (#{row['id']}, "
+              f"listen_seconds={seed.get('listen_seconds', 0)})")
+    customs = [a for a in eo_db.list_agents(active_only=False) if a.get("wedding_id")]
+    if customs:
+        print(f"  left untouched: {len(customs)} per-wedding agent(s) — "
+              f"{', '.join(a['name'] for a in customs)}")
+
+
 def preview(wid, event_id, agent, owner):
     guests = eo_db.guests_for_audience(wid, "all", created_by=owner)
     r = prompt_render.render_prompt(agent, wedding=eo_db.get_wedding(wid),
                                     event=eo_db.get_event(event_id),
-                                    guest=guests[0] if guests else None)
+                                    guest=guests[0] if guests else None,
+                                    events=eo_db.list_events(wid))
     print("=" * 70)
     print(r["system_instruction"])
     print("=" * 70)
@@ -153,7 +184,15 @@ def main():
     ap.add_argument("--logistics", action="store_true",
                     help="with --preview, render the logistics agent instead")
     ap.add_argument("--list", action="store_true", help="list the event keys and exit")
+    ap.add_argument("--refresh-agents", action="store_true",
+                    help="update the shipped agent templates from agent_seeds.py "
+                         "(per-wedding copies are left alone)")
     args = ap.parse_args()
+
+    if args.refresh_agents:
+        print("Refreshing the shipped agent templates:")
+        refresh_agents()
+        return
 
     if args.list:
         for key, name, edate, start, venue, audience in EVENTS:

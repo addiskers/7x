@@ -852,6 +852,8 @@ async def agents_preview(agent_id: int, request: Request):
 
     rendered = prompt_render.render_prompt(
         agent, wedding=wedding, event=event, guest=guest,
+        # the guest's whole schedule, so the preview shows exactly what a call would know
+        events=eo_db.list_events(wedding_id) if wedding_id else None,
         extra=body.get("sample") if isinstance(body.get("sample"), dict) else None)
     return JSONResponse({
         "system_instruction": rendered["system_instruction"],
@@ -1029,7 +1031,8 @@ async def campaign_preflight(request: Request):
 
     rendered = prompt_render.render_prompt(
         p["agent"], wedding=eo_db.get_wedding(p["wedding_id"]) if p["wedding_id"] else None,
-        event=p["event"], guest=p["contacts"][0] if p["contacts"] else None)
+        event=p["event"], guest=p["contacts"][0] if p["contacts"] else None,
+        events=eo_db.list_events(p["wedding_id"]) if p["wedding_id"] else None)
 
     active = eo_db.active_campaigns()
     return JSONResponse({
