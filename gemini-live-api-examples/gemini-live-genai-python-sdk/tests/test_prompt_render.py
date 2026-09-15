@@ -317,9 +317,27 @@ def test_both_agents_escalate_instead_of_hanging_up():
     puchta hai to call end ho jata hai"."""
     for slug, seed in _shipped().items():
         t = seed["prompt_template"]
-        assert "I will notify {hospitality_team}" in t, slug
+        assert "I will notify the team" in t, slug
         assert "SPEAK TO A PERSON" in t, slug
         assert "NONE of these is a reason to end the call" in t, slug
+
+
+def test_no_agent_offers_a_phone_number_to_ring_back():
+    """"is there anything u can call on this number 98945..?" — the contact fields were
+    blank, so the agent was offering a number it did not have. We call guests; they never
+    need to ring us."""
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
+        assert "{contact_phone}" not in t, slug
+        assert "{contact_name}" not in t, slug
+
+
+def test_every_agent_introduces_itself_as_7x_on_behalf_of_the_wedding():
+    """7x is the caller on every wedding, so it is fixed; the couple comes from the row."""
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
+        assert "This is 7x, calling on behalf of {wedding_name}'s wedding." in t, slug
+        assert "{hospitality_team}" not in t, slug
 
 
 def test_the_logistics_agent_can_answer_about_the_guests_stay():
