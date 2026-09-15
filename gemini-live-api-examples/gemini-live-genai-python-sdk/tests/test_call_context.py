@@ -48,7 +48,7 @@ def test_context_ids_ride_the_answer_url(monkeypatch):
     monkeypatch.setenv("PLIVO_FROM_NUMBER", "+10000000000")
     captured = {}
     monkeypatch.setattr(dialer, "_place_call_sync",
-                        lambda to, url: captured.setdefault("url", url) or "UUID")
+                        lambda to, url, frm=None: captured.setdefault("url", url) or "UUID")
     asyncio.run(dialer.place_call("+919876543210", name="Rajesh", campaign_id=7,
                                   agent_id=1, event_id=2, guest_id=3, wedding_id=4))
     url = captured["url"]
@@ -62,7 +62,7 @@ def test_non_numeric_context_ids_are_dropped_not_injected(monkeypatch):
     monkeypatch.setenv("PLIVO_FROM_NUMBER", "+10000000000")
     captured = {}
     monkeypatch.setattr(dialer, "_place_call_sync",
-                        lambda to, url: captured.setdefault("url", url) or "UUID")
+                        lambda to, url, frm=None: captured.setdefault("url", url) or "UUID")
     asyncio.run(dialer.place_call("+919876543210", agent_id="1&evil=1", event_id=None))
     assert "evil" not in captured["url"]
     assert "agent=" not in captured["url"]

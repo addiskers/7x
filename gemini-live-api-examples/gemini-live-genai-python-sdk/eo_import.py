@@ -166,7 +166,7 @@ def parse_upload(filename, data):
     rows: list of (name, e164, status, guest_fields) — the 4th element carries whatever
     wedding columns the sheet had (side, hotel, flight...), an empty dict when it had
     none. unknown_headers is reported back so a mis-named column is visible rather than
-    silently ignored."""
+    silently ignored; call transport_mismatches(rows) for travel-data warnings."""
     name = (filename or "").lower()
     raw_rows, unknown = _parse_csv(data) if name.endswith(".csv") else _parse_xlsx(data)
     seen = {}                                        # e164 -> (name, status, fields)
@@ -186,6 +186,38 @@ def parse_upload(filename, data):
         seen[e164] = (keep_name, keep_status, merged)
     rows = [(nm, ph, st, f) for ph, (nm, st, f) in seen.items()]
     return rows, rejected, len(raw_rows), unknown
+
+
+# An airline code: a carrier prefix then 3-4 digits — "6E 2134", "AI456", "UK 955".
+# The prefix MUST contain a letter: a bare "12951" is an Indian train number, and an
+# earlier [A-Z0-9]{2} pattern flagged every train as a flight.
+_FLIGHT_CODE_RE = re.compile(r"^(?=.*[A-Z])[A-Z0-9]{2}\s?\d{3,4}$", re.I)
+# An Indian train number is five bare digits — "12951".
+_TRAIN_CODE_RE = re.compile(r"^\d{5}$")
+
+
+def transport_mismatches(rows):
+    """Rows whose travel mode disagrees with the shape of their travel number.
+
+    The agent reads {transport_mode} out loud, so a sheet saying "train" beside a flight
+    code makes it tell a guest their "train number" while they hold a boarding pass. Only
+    reported — never auto-corrected, because the number could equally be the wrong one."""
+    out = []
+    for row in rows:
+        fields = row[3] if len(row) > 3 else None
+        if not fields:
+            continue
+        mode = str(fields.get("transport_mode") or "").strip().lower()
+        number = str(fields.get("transport_number") or "").strip()
+        if not mode or not number:
+            continue
+        looks_flight = bool(_FLIGHT_CODE_RE.match(number))
+        looks_train = bool(_TRAIN_CODE_RE.match(number))
+        if mode == "train" and looks_flight:
+            out.append(f"{row[1]}: mode says 'train' but '{number}' looks like a flight")
+        elif mode == "flight" and looks_train:
+            out.append(f"{row[1]}: mode says 'flight' but '{number}' looks like a train")
+    return out
 
 
 def build_template():

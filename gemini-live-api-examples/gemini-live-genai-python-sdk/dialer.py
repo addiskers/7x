@@ -31,11 +31,39 @@ def _base_url(base_url=None, request=None):
     return ""
 
 
-def _place_call_sync(to_number, answer_url):
+# Outbound caller-ID rotation. PLIVO_FROM_NUMBER accepts one number or a comma-separated
+# list; a wedding-day burst from a single line gets flagged by carriers, so calls are spread
+# across whatever is configured. A single value behaves exactly as before.
+_from_rotation = 0
+
+
+def from_numbers():
+    """Configured caller-ID numbers, in order. Empty list when none is set."""
+    raw = os.getenv("PLIVO_FROM_NUMBER", "") or ""
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+def _pick_from_number():
+    """The next caller-ID to dial from, round-robin (same rotation idea as the campaign
+    runner's fair ordering). Returns "" when nothing is configured — the caller already
+    rejects that case with a clear error."""
+    global _from_rotation
+    numbers = from_numbers()
+    if not numbers:
+        return ""
+    if len(numbers) == 1:
+        return numbers[0]
+    picked = numbers[_from_rotation % len(numbers)]
+    _from_rotation += 1
+    return picked
+
+
+def _place_call_sync(to_number, answer_url, from_number=None):
     import plivo
     client = plivo.RestClient(os.getenv("PLIVO_AUTH_ID"), os.getenv("PLIVO_AUTH_TOKEN"))
     resp = client.calls.create(
-        from_=os.getenv("PLIVO_FROM_NUMBER", ""),
+        # Passed in, not re-read here, so the number we LOG is the number we dialled.
+        from_=from_number if from_number is not None else _pick_from_number(),
         to_=to_number,
         answer_url=answer_url,
         answer_method="GET",
@@ -164,14 +192,20 @@ async def place_call(to_number, *, base_url=None, request=None, gen=0, origin_ca
         answer_url += f"&campaign={int(campaign_id)}"
     answer_url += _ctx_params()
 
+    # Chosen here, not inside the executor, so the number we report is the number we dialled —
+    # when a carrier flags a line you need to know which one placed the call.
+    from_number = _pick_from_number()
+
     try:
         loop = asyncio.get_running_loop()
         request_uuid = await loop.run_in_executor(
-            None, _place_call_sync, to_number, answer_url)
-        logger.info(f"Outbound Plivo call initiated: {request_uuid} to {to_number} (gen={gen})")
-        return {"success": True, "call_uuid": request_uuid, "to": to_number, "provider": "plivo"}
+            None, _place_call_sync, to_number, answer_url, from_number)
+        logger.info(f"Outbound Plivo call initiated: {request_uuid} to {to_number} "
+                    f"from {from_number} (gen={gen})")
+        return {"success": True, "call_uuid": request_uuid, "to": to_number,
+                "from": from_number, "provider": "plivo"}
     except Exception as e:
-        logger.error(f"Failed to initiate Plivo call to {to_number}: {e}")
+        logger.error(f"Failed to initiate Plivo call to {to_number} from {from_number}: {e}")
         return {"error": str(e)}
 
 

@@ -38,7 +38,7 @@ def _dispatch_env(monkeypatch):
 def test_place_call_routes_by_provider(monkeypatch):
     _dispatch_env(monkeypatch)
     hits = []
-    monkeypatch.setattr(dialer, "_place_call_sync", lambda to, url: hits.append(("plivo", url)) or "p-1")
+    monkeypatch.setattr(dialer, "_place_call_sync", lambda to, url, frm=None: hits.append(("plivo", url)) or "p-1")
     monkeypatch.setattr(dialer, "_place_call_sync_enablex", lambda to, url: hits.append(("enablex", url)) or "e-1")
 
     res = asyncio.run(dialer.place_call("+911111111111", provider="enablex", name="Shivi", campaign_id=7))
@@ -55,7 +55,7 @@ def test_place_call_routes_by_provider(monkeypatch):
 def test_place_call_env_default_and_unknown_fallback(monkeypatch):
     _dispatch_env(monkeypatch)
     hits = []
-    monkeypatch.setattr(dialer, "_place_call_sync", lambda to, url: hits.append("plivo") or "p-1")
+    monkeypatch.setattr(dialer, "_place_call_sync", lambda to, url, frm=None: hits.append("plivo") or "p-1")
     monkeypatch.setattr(dialer, "_place_call_sync_enablex", lambda to, url: hits.append("enablex") or "e-1")
 
     monkeypatch.setenv("EO_DEFAULT_PROVIDER", "enablex")

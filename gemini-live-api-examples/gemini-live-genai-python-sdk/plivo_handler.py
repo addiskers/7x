@@ -143,19 +143,32 @@ def _looks_like_agent_question(turn_text: str) -> bool:
 
 # An agent turn that reads like a sign-off — the ONLY kind of post-RSVP turn that may arm the bridge-side hangup.
 # Deliberately separate from _CLOSING_MARKERS (those are repeat-guard markers and include non-closings).
+# "speak soon" / "talk soon" are deliberately NOT here: they are how the agent paraphrases the
+# escalation promise ("someone will speak to you soon"), and treating that as a goodbye hung up on
+# guests who had just asked for a human. Everything left is an unambiguous farewell.
 _CLOSING_PHRASE_RE = re.compile(
-    r"\b(see you|take care|all set|talk soon|speak soon|bye+|goodbye|good ?bye|look forward|"
+    r"\b(see you|take care|all set|bye+|goodbye|good ?bye|look forward|"
     r"have a (lovely|great|good|wonderful|nice)|we('ll| will) miss you|thanks for letting me know|"
     r"milte hain|milenge|aavjo|dhanyavaad|dhanyawad|shukriya|khayal rakhna|dhyan rakhna)\b", re.I)
+
+# A turn that PROMISES a follow-up is the opposite of a goodbye — the guest asked for a person and
+# is waiting. This must beat the closing check, or the escalation line ends the call it was meant
+# to keep open.
+_ESCALATION_RE = re.compile(
+    r"\b(will notify|i'll notify|will inform|i'll inform|will let (the|them) \w+ know|"
+    r"reach out to you|reach out to them|get back to you|someone will (call|contact|speak|reach)|"
+    r"will pass (this|that|it) on|team will (call|contact|reach|get))\b", re.I)
 
 
 def _looks_like_closing(turn_text: str) -> bool:
     """True when the agent's COMPLETED turn is a sign-off. A turn that ends on a question is waiting
     for an answer ("Are you all set to join us?", "Anything you'd like me to repeat?") — never a closing,
-    even if a closing word appears inside it."""
+    even if a closing word appears inside it. Nor is a turn promising someone will follow up."""
     t = (turn_text or "").strip().rstrip(" \"'”’)")
     if not t or t.endswith("?"):
         return False
+    if _ESCALATION_RE.search(t):
+        return False                    # "someone will reach out shortly" — stay on the line
     return bool(_CLOSING_PHRASE_RE.search(t))
 
 # Mulaw codec tables (ITU-T G.711)

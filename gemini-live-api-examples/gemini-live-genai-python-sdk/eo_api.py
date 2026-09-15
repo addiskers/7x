@@ -1237,7 +1237,10 @@ async def contacts_import(request: Request, file: UploadFile = File(...)):
     return {"ok": True, "rows_read": total, "added": added, "updated": updated,
             "rejected": rejected, "invalid": invalid,
             # So a mis-named column is visible rather than silently dropped.
-            "mapped_fields": mapped, "unknown_headers": unknown[:12]}
+            "mapped_fields": mapped, "unknown_headers": unknown[:12],
+            # The agent reads the travel mode aloud, so a sheet saying "train" beside a
+            # flight code tells a guest the wrong thing on the call. Flag it at upload.
+            "transport_warnings": eo_import.transport_mismatches(rows)[:12]}
 
 
 @router.post("/contacts/delete")

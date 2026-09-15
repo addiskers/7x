@@ -347,12 +347,60 @@ def init() -> None:
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
     _seed_agents()
+    # Seeding never overwrites an existing row, so a redeploy can leave old prompt text in
+    # the database while the code is current. Say so on every boot rather than waiting for
+    # a client to hear it on a call.
+    warn_about_stale_agents()
 
 
 def schema_version() -> int:
     """The DB's stamped schema version (0 on a pre-7x database)."""
     r = get_conn().execute("PRAGMA user_version").fetchone()
     return int(r[0]) if r else 0
+
+
+# Text that should not survive in any live agent prompt. The first group is branding from
+# the EO build this platform was converted from; the rest are sections every current agent
+# must carry. A row missing them predates a fix and is still speaking the old script.
+_STALE_MARKERS = ("EO Gujarat", "Raj Goodman", "AI First Mindset", "DoubleTree",
+                  "Sir or Ma'am, am I speaking")
+_REQUIRED_FRAGMENTS = (
+    ("{schedule}", "cannot answer about other functions"),
+    ("SPEAK TO A PERSON", "hangs up when asked for a person"),
+)
+
+
+def stale_agent_reasons(agent) -> list:
+    """Why this agent's prompt looks out of date. Empty list = current.
+
+    Checked on every boot and by --refresh-agents, because a stale row is invisible: the
+    code is new, the prompt in the database is old, and only a guest on a live call finds
+    out."""
+    text = (agent or {}).get("prompt_template") or ""
+    if not text:
+        return []
+    reasons = [f"still says '{m}'" for m in _STALE_MARKERS if m in text]
+    reasons += [why for frag, why in _REQUIRED_FRAGMENTS if frag not in text]
+    return reasons
+
+
+def warn_about_stale_agents() -> list:
+    """Log a loud warning for every agent row carrying old prompt text. Returns them."""
+    stale = []
+    try:
+        for a in all_agents():
+            reasons = stale_agent_reasons(a)
+            if reasons:
+                stale.append(a)
+                logger.warning(
+                    "STALE AGENT PROMPT: '%s' (id=%s, wedding_id=%s) — %s. "
+                    "Guests on this agent hear the OLD script. Fix with: "
+                    "python seed_demo_wedding.py --refresh-agents%s",
+                    a.get("name"), a.get("id"), a.get("wedding_id"), "; ".join(reasons),
+                    " --force-all" if a.get("wedding_id") else "")
+    except Exception:
+        logger.debug("stale-agent check failed", exc_info=True)
+    return stale
 
 
 def _seed_agents() -> None:
@@ -847,6 +895,15 @@ def list_agents(wedding_id=None, active_only=True) -> list[dict]:
         where.append("active = 1")
     return _rows(f"SELECT * FROM agents WHERE {' AND '.join(where)} "
                  f"ORDER BY wedding_id IS NULL DESC, kind, name", tuple(params))
+
+
+def all_agents() -> list[dict]:
+    """EVERY agent row across every wedding.
+
+    list_agents() answers "what may THIS wedding use" and so returns only the globals plus
+    one wedding's own. Maintenance work — the stale-prompt scan, --refresh-agents — has to
+    see every row, including a copy belonging to a wedding it was not asked about."""
+    return _rows("SELECT * FROM agents ORDER BY wedding_id IS NULL DESC, wedding_id, kind, name")
 
 
 def update_agent(agent_id: int, **fields) -> int:

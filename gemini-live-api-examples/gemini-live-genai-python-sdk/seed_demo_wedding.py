@@ -133,34 +133,57 @@ def seed(phone=None):
     return wid, keys, owner, reminder, logistics
 
 
-def refresh_agents():
+def _apply_seed(row, seed):
+    eo_db.update_agent(row["id"],
+                       name=seed["name"], kind=seed["kind"],
+                       description=seed.get("description", ""),
+                       prompt_template=seed["prompt_template"],
+                       trigger_template=seed.get("trigger_template", ""),
+                       outcome_enum=seed.get("outcome_enum", "[]"),
+                       extra_fields=seed.get("extra_fields", "[]"),
+                       listen_seconds=int(seed.get("listen_seconds", 0)),
+                       requires_event=int(seed.get("requires_event", 1)))
+
+
+def refresh_agents(force_all=False):
     """Update the shipped global agent templates in place from agent_seeds.SEEDS.
 
     init()'s seeding is idempotent by slug and deliberately never overwrites an existing
-    row, so a deploy does NOT pick up prompt changes. This does — but only for the global
-    (wedding_id IS NULL) rows. A wedding's own duplicate is the operator's, and stays."""
+    row, so a deploy does NOT pick up prompt changes. This does — for the global
+    (wedding_id IS NULL) rows by default.
+
+    A wedding's own duplicate is the operator's and is NOT updated, but it IS checked: a
+    copy made before a fix keeps speaking the old text forever, and because a call resolves
+    its agent by id, that copy is what guests actually hear. Stale ones are named here, and
+    force_all=True updates them too (discarding any wording the operator changed)."""
     import agent_seeds
     eo_db.init()
-    for seed in agent_seeds.SEEDS:
-        row = eo_db.get_agent_by_slug(seed["slug"])          # global row only
+    by_slug = {s["slug"]: s for s in agent_seeds.SEEDS}
+
+    for slug, seed in by_slug.items():
+        row = eo_db.get_agent_by_slug(slug)                  # global row only
         if not row or row.get("wedding_id") is not None:
-            print(f"  {seed['slug']}: no global row, skipped")
+            print(f"  {slug}: no global row, skipped")
             continue
-        eo_db.update_agent(row["id"],
-                           name=seed["name"], kind=seed["kind"],
-                           description=seed.get("description", ""),
-                           prompt_template=seed["prompt_template"],
-                           trigger_template=seed.get("trigger_template", ""),
-                           outcome_enum=seed.get("outcome_enum", "[]"),
-                           extra_fields=seed.get("extra_fields", "[]"),
-                           listen_seconds=int(seed.get("listen_seconds", 0)),
-                           requires_event=int(seed.get("requires_event", 1)))
-        print(f"  {seed['slug']}: updated (#{row['id']}, "
+        _apply_seed(row, seed)
+        print(f"  {slug}: updated (#{row['id']}, "
               f"listen_seconds={seed.get('listen_seconds', 0)})")
-    customs = [a for a in eo_db.list_agents(active_only=False) if a.get("wedding_id")]
-    if customs:
-        print(f"  left untouched: {len(customs)} per-wedding agent(s) — "
-              f"{', '.join(a['name'] for a in customs)}")
+
+    customs = [a for a in eo_db.all_agents() if a.get("wedding_id")]
+    if not customs:
+        return
+    for a in customs:
+        problems = eo_db.stale_agent_reasons(a)
+        if not problems:
+            print(f"  kept: '{a['name']}' (#{a['id']}) — per-wedding copy, looks current")
+            continue
+        if force_all and a.get("slug") in by_slug:
+            _apply_seed(a, by_slug[a["slug"]])
+            print(f"  FORCED: '{a['name']}' (#{a['id']}) — was stale ({', '.join(problems)})")
+        else:
+            print(f"  STALE:  '{a['name']}' (#{a['id']}) — {', '.join(problems)}")
+            print(f"          guests on this agent still hear the old script. "
+                  f"Re-run with --force-all to update it.")
 
 
 def preview(wid, event_id, agent, owner):
@@ -186,12 +209,15 @@ def main():
     ap.add_argument("--list", action="store_true", help="list the event keys and exit")
     ap.add_argument("--refresh-agents", action="store_true",
                     help="update the shipped agent templates from agent_seeds.py "
-                         "(per-wedding copies are left alone)")
+                         "(per-wedding copies are checked and reported, not changed)")
+    ap.add_argument("--force-all", action="store_true",
+                    help="with --refresh-agents, ALSO overwrite stale per-wedding copies "
+                         "— this discards any wording edited in the Agents tab")
     args = ap.parse_args()
 
-    if args.refresh_agents:
+    if args.refresh_agents or args.force_all:
         print("Refreshing the shipped agent templates:")
-        refresh_agents()
+        refresh_agents(force_all=args.force_all)
         return
 
     if args.list:
