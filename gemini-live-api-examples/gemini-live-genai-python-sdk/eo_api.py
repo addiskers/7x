@@ -1462,3 +1462,57 @@ async def eo_scheduler_toggle(request: Request):
     enabled = bool(body.get("enabled", not scheduler.is_enabled()))
     scheduler.set_override(enabled)
     return {"ok": True, "enabled": enabled}
+
+
+# ---- Campaign Analytics ----
+
+@router.get("/campaigns/{campaign_id}/analytics")
+async def campaign_analytics(campaign_id: int, request: Request):
+    """Get analytics for a specific campaign."""
+    user = eo_auth.require_eo(request)
+    campaign = eo_db.get_campaign(campaign_id)
+    if not campaign or not _owns_or_admin(user, campaign):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    import call_analytics
+    analytics = call_analytics.get_campaign_analytics(campaign_id)
+    return analytics
+
+
+@router.get("/weddings/{wedding_id}/analytics")
+async def wedding_analytics(wedding_id: int, request: Request):
+    """Get aggregated analytics for all campaigns in a wedding."""
+    user = eo_auth.require_eo(request)
+    wedding = eo_db.get_wedding(wedding_id)
+    if not wedding:
+        raise HTTPException(status_code=404, detail="Wedding not found")
+
+    import call_analytics
+    analytics = call_analytics.get_wedding_analytics(wedding_id)
+    return analytics
+
+
+@router.get("/campaigns/{campaign_id}/pending")
+async def campaign_pending_calls(campaign_id: int, request: Request):
+    """Get pending calls for a campaign."""
+    user = eo_auth.require_eo(request)
+    campaign = eo_db.get_campaign(campaign_id)
+    if not campaign or not _owns_or_admin(user, campaign):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    import call_analytics
+    pending = call_analytics.get_pending_calls(campaign_id)
+    return {"pending_calls": pending}
+
+
+@router.get("/campaigns/{campaign_id}/completed")
+async def campaign_completed_calls(campaign_id: int, request: Request):
+    """Get completed calls for a campaign."""
+    user = eo_auth.require_eo(request)
+    campaign = eo_db.get_campaign(campaign_id)
+    if not campaign or not _owns_or_admin(user, campaign):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    import call_analytics
+    completed = call_analytics.get_completed_calls(campaign_id)
+    return {"completed_calls": completed}
