@@ -1,75 +1,69 @@
-"""Seed the Manya & Anant wedding (Fairmont, Udaipur) from the client's itinerary.
+"""Seed the Ved & Riya wedding from the client's 25-September brief.
 
 Idempotent — re-running updates the same wedding and events rather than duplicating.
 
     python seed_demo_wedding.py                      # seed
     python seed_demo_wedding.py --phone +9198...     # seed + set the sample guest's number
-    python seed_demo_wedding.py --preview saanth     # print the rendered script and exit
+    python seed_demo_wedding.py --preview sufi       # print the rendered script and exit
     python seed_demo_wedding.py --list               # show the event keys
+    python seed_demo_wedding.py --delete-wedding 1   # remove a previous wedding + its guests
 """
 
 import argparse
 import sys
 
+# --preview prints a rendered script, and those now contain Devanagari and Gujarati
+# examples from the LANGUAGE block. A Windows console defaults to cp1252 and raises
+# UnicodeEncodeError on them, so reconfigure before anything is printed — same guard as
+# main._utf8_console, kept here because this script does not import main.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if _stream is not None and hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass                      # a redirected or closed stream is not worth failing over
+
 import eo_auth
 import eo_db
 import prompt_render
 
-WEDDING_NAME = "Manya & Anant"
+WEDDING_NAME = "Ved & Riya"
 
-# From the client's itinerary. Only functions guests should be REMINDED about are here:
-# breakfasts, hi-teas, arrivals and check-outs are hotel logistics, not call-worthy, and
-# ringing someone about breakfast three mornings running is how a guest list gets annoyed.
+# The evening of 25 September. All three functions are open to every guest — this brief has
+# no groom/bride-side split, so audience is "all" throughout and {schedule} shows all three
+# to everyone.
+#
+# Times are 24h "HH:MM" and are converted to speech by prompt_render._spoken_time, so
+# "23:00" becomes "eleven at night". Never write them as "11:00 PM" here.
 #
 # (key, name, date, start "HH:MM", venue, audience)
 EVENTS = [
-    # --- 19 September ---
-    ("ghazal",    "Ghazal Night & Dinner",
-     "2026-09-19", "19:00", "Infinity Terrace", "all"),
-
-    # --- 20 September ---
-    ("mehendi",   "Mehendi & Haldi followed by Lunch",
-     "2026-09-20", "12:00", "Ivory Garden & Pool", "all"),
-    ("cocktail",  "Cocktail followed by Dinner",
-     "2026-09-20", "19:30", "The Jewel", "all"),
-
-    # --- 21 September, the wedding day ---
-    ("saanth",    "Saanth",
-     "2026-09-21", "11:00", "Imperial Terrace", "groom"),
-    ("chuda",     "Chuda Ceremony",
-     "2026-09-21", "12:30", "Imperial Ballroom & Terrace", "bride"),
-    ("sehrabandhi", "Hi-Tea & Sehrabandhi",
-     "2026-09-21", "18:00", "Sheesh Mahal", "groom"),
-    ("baraat",    "Baraat Procession",
-     "2026-09-21", "18:15", "Panther Patio", "groom"),
-    ("swagat",    "Safa Bandhi & Baraat Swagat",
-     "2026-09-21", "19:30", "Jashn Palace Garden", "bride"),
-    ("milni",     "Milni",
-     "2026-09-21", "19:45", "Jashn Palace Garden", "all"),
-    ("varmala",   "Varmala",
-     "2026-09-21", "20:00", "Jashn Palace Garden", "all"),
-    ("reception", "Reception",
-     "2026-09-21", "20:45", "Jashn Palace Garden", "all"),
-    ("wedding",   "Wedding Ceremony",
-     "2026-09-21", "22:30", "Chand Baori", "all"),
-    ("vidaai",    "Vidaai",
-     "2026-09-22", "00:30", "Chand Baori", "all"),
+    ("hitea",      "Hi-Tea",      "2026-09-25", "16:00", "Harvest",    "all"),
+    ("sufi",       "Sufi Night",  "2026-09-25", "19:00", "Great Park", "all"),
+    ("afterparty", "After Party", "2026-09-25", "23:00", "Ballroom",   "all"),
 ]
 
-# Announcements for the few functions where the itinerary says more than time + venue.
+# The highlights for each function. This is the ONLY per-event free text the agent speaks,
+# and it is injected verbatim — so times inside it must be written longhand as prose,
+# because _spoken_time never touches it.
+#
+# Note build_schedule() does NOT read this: an announcement is spoken in full only for the
+# function the call is actually about. The other two remain answerable by name, time and
+# venue from {schedule}.
 ANNOUNCEMENTS = {
-    "mehendi":  "Lunch follows the Mehendi and Haldi.",
-    "cocktail": "Dinner follows at nine, and there is an after-party later at the same venue.",
-    "saanth":   "Lunch follows at half past twelve in the Imperial Ballroom.",
-    "chuda":    "Lunch follows at half past twelve in the Imperial Ballroom.",
-    "vidaai":   "The Vidaai is just after midnight, at the close of the wedding night.",
+    "hitea": "Evening refreshments, with light snacks and drinks, from four until six.",
+    "sufi":  "There is a grand welcome with an ittar shower and a gajra, a mocktail bar, "
+             "and an interactive perfume-making experience. The couple enter at quarter "
+             "past eight, and Shadab Faridi performs live from half past eight. Dinner is "
+             "served through the evening.",
+    "afterparty": "A DJ night with DJ Alex, a bar, and supper from half past eleven.",
 }
 
 # One sample guest so the Test panel has someone to render against. Replace with the
 # real guest list via Create Campaign -> upload.
 GUESTS = [
-    ("Rajesh Kumar", "+919876543210", "groom", "vegetarian", "flight", "AI 456",
-     "2:30 PM on 19 September", "22 September", "Fairmont Udaipur"),
+    ("Rajesh Kumar", "+919876543210", "", "vegetarian", "", "",
+     "25 September", "26 September", ""),
 ]
 
 
@@ -85,13 +79,16 @@ def seed(phone=None):
     eo_db.init()
     owner = _owner()
 
+    # hospitality_team is spoken verbatim in the greeting — "Hey, I'm speaking from
+    # {hospitality_team}" — so it must read as a name with no article in front of it and
+    # no "&" (the agent would have to spell it out).
     fields = dict(
-        groom_name="Anant", bride_name="Manya",
-        start_date="2026-09-19", end_date="2026-09-22", city="Udaipur",
-        hospitality_team="Manya and Anant's Wedding Hospitality team",
-        placard_text="Manya & Anant Wedding — Welcome",
+        groom_name="Ved", bride_name="Riya",
+        start_date="2026-09-25", end_date="2026-09-25", city="",
+        hospitality_team="Ved and Riya's Hospitality Team",
+        placard_text="Ved & Riya Wedding — Welcome",
         contact_phone="", contact_name="",
-        notes="Fairmont, Udaipur. 19-22 September 2026.",
+        notes="Evening of 25 September 2026: Hi-Tea, Sufi Night, After Party.",
     )
     existing = [w for w in eo_db.list_weddings() if w["name"] == WEDDING_NAME]
     if existing:
@@ -131,6 +128,46 @@ def seed(phone=None):
     logistics = eo_db.get_agent_by_slug("logistics_concierge")
     print(f"agents: reminder=#{reminder['id']}  logistics=#{logistics['id']}")
     return wid, keys, owner, reminder, logistics
+
+
+def delete_wedding(wid, assume_yes=False):
+    """Remove a wedding, its events, its agent copies AND its guests.
+
+    eo_db.delete_wedding cascades to events and agents (both carry a FK with ON DELETE
+    CASCADE), but contacts and campaigns do NOT have a foreign key to weddings — they
+    would be left behind with a dangling wedding_id, invisible in the UI and ready to
+    collide with a fresh import on UNIQUE(created_by, wedding_id, phone). So the guests
+    are deleted explicitly here.
+
+    Matched by ID, never by name: the live row is 'Anant & Manya' while the old script
+    looked for 'Manya & Anant', so a name match would silently delete nothing."""
+    eo_db.init()
+    wedding = eo_db.get_wedding(wid)
+    if not wedding:
+        raise SystemExit(f"No wedding with id {wid}. Use --list-weddings to see what exists.")
+
+    # Mirror the API's guard (eo_api.py weddings_delete): deleting out from under a running
+    # dialer would strand it with no script.
+    live = [c for c in eo_db.active_campaigns() if c.get("wedding_id") == wid]
+    if live:
+        names = ", ".join(f"'{c['name']}' ({c['status']})" for c in live)
+        raise SystemExit(f"Refusing to delete: campaign {names} is still active. Cancel it first.")
+
+    events = eo_db.list_events(wid)
+    agents = [a for a in eo_db.all_agents() if a.get("wedding_id") == wid]
+    guests = eo_db.list_contacts(wedding_id=wid, limit=100000)["items"]
+
+    print(f"About to permanently delete wedding #{wid} '{wedding['name']}':")
+    print(f"  {len(events)} events, {len(agents)} per-wedding agent(s), {len(guests)} guest(s)")
+    if not assume_yes:
+        if input("Type the wedding name to confirm: ").strip() != wedding["name"]:
+            raise SystemExit("Name did not match — nothing was deleted.")
+
+    if guests:
+        eo_db.delete_contacts([g["id"] for g in guests])
+    eo_db.delete_wedding(wid)
+    print(f"Deleted wedding #{wid} '{wedding['name']}', its {len(events)} events, "
+          f"{len(agents)} agent copies and {len(guests)} guests.")
 
 
 def _apply_seed(row, seed):
@@ -213,7 +250,25 @@ def main():
     ap.add_argument("--force-all", action="store_true",
                     help="with --refresh-agents, ALSO overwrite stale per-wedding copies "
                          "— this discards any wording edited in the Agents tab")
+    ap.add_argument("--delete-wedding", metavar="ID", type=int,
+                    help="permanently delete a wedding with its events, agents and guests")
+    ap.add_argument("--list-weddings", action="store_true",
+                    help="show every wedding with its id, and exit")
+    ap.add_argument("--yes", action="store_true",
+                    help="with --delete-wedding, skip the confirmation prompt")
     args = ap.parse_args()
+
+    if args.list_weddings:
+        eo_db.init()
+        for w in eo_db.list_weddings():
+            events = len(eo_db.list_events(w["id"]))
+            guests = eo_db.list_contacts(wedding_id=w["id"], limit=100000)["total"]
+            print(f"  #{w['id']:<4} {w['name']:<24} {events} events, {guests} guests")
+        return
+
+    if args.delete_wedding:
+        delete_wedding(args.delete_wedding, assume_yes=args.yes)
+        return
 
     if args.refresh_agents or args.force_all:
         print("Refreshing the shipped agent templates:")
@@ -234,8 +289,8 @@ def main():
         return
 
     print("\nEvent ids: " + ", ".join(f"{k}={v}" for k, v in keys.items()))
-    print("\nNext: open /admin -> Weddings -> Manya & Anant, then Agents -> "
-          "Event Reminder -> Show the script.")
+    print(f"\nNext: open /admin -> Weddings -> {WEDDING_NAME}, then Create Campaign "
+          "-> Sufi Night, agent 'Event Reminder', start 2026-09-25 16:30 IST.")
 
 
 if __name__ == "__main__":

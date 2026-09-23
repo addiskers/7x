@@ -1,6 +1,7 @@
 """prompt_render.py — placeholder resolution, spoken time/date, and the cleanup that
 stops a missing value from being read aloud as punctuation."""
 
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -332,12 +333,59 @@ def test_no_agent_offers_a_phone_number_to_ring_back():
         assert "{contact_name}" not in t, slug
 
 
-def test_every_agent_introduces_itself_as_7x_on_behalf_of_the_wedding():
-    """7x is the caller on every wedding, so it is fixed; the couple comes from the row."""
+def test_every_agent_introduces_itself_as_the_hospitality_team():
+    """The client's brief sets the greeting: "Hey, I'm speaking from Ved and Riya's
+    Hospitality Team." The team name comes from the wedding row, so one platform serves
+    every couple; 7x is the vendor and is never said aloud."""
     for slug, seed in _shipped().items():
         t = seed["prompt_template"]
-        assert "This is 7x, calling on behalf of {wedding_name}'s wedding." in t, slug
-        assert "{hospitality_team}" not in t, slug
+        assert "Hey, I'm speaking from {hospitality_team}." in t, slug
+        assert "7x" not in t, slug
+
+
+def test_the_opening_greets_before_asking_who_answered():
+    """The brief greets, says why, THEN confirms the guest — all in the first breath.
+    The trigger is what the model actually acts on for turn one, so it must carry the
+    greeting too; a trigger that says "Hello, am I speaking with X?" overrides any
+    opening written in the prompt body."""
+    for slug, seed in _shipped().items():
+        trigger = seed["trigger_template"]
+        assert "{hospitality_team}" in trigger, slug
+        assert "Hello, am I speaking with" not in trigger, slug
+        assert "{guest_name}" in trigger, slug
+
+
+def test_a_blank_guest_field_never_leaves_a_half_sentence():
+    """"- They are on {side_phrase}." rendered as "- They are." for a guest whose side was
+    never recorded — a fragment the agent reads aloud. _tidy drops a bullet whose LABEL
+    lost its value ("- Side of the family:"), but cannot rescue a sentence that is still
+    grammatical, so these facts must be written as labelled bullets, not prose."""
+    import prompt_render
+    guest = {"name": "Rajesh Kumar", "phone": "+919876543210"}      # nothing else known
+    wedding = {"name": "Ved & Riya", "hospitality_team": "Ved and Riya's Hospitality Team"}
+    event = {"name": "Sufi Night", "start_time": "19:00", "venue": "Great Park",
+             "event_date": "2026-09-25"}
+    for slug, seed in _shipped().items():
+        r = prompt_render.render_prompt(seed, wedding=wedding, event=event, guest=guest,
+                                        events=[event])
+        for line in r["system_instruction"].split("\n"):
+            assert line.strip() != "- They are.", slug
+            # any bullet reduced to a bare subject+verb is the same bug
+            assert not re.fullmatch(r"-\s*They are\s*\.?", line.strip()), slug
+
+
+def test_every_agent_understands_all_ten_briefed_languages():
+    """The brief lists ten. The voice stays en-IN (Gemini Live fixes language_code at
+    session start and cannot switch mid-call), but comprehension and replies are the
+    agent's own, so the prompt must name each one."""
+    languages = ("English", "Hindi", "Gujarati", "Marathi", "Punjabi", "Bengali",
+                 "Tamil", "Telugu", "Kannada", "Malayalam")
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
+        for lang in languages:
+            assert lang in t, f"{slug} never mentions {lang}"
+        # the brief's fallback, for when detection is genuinely unclear
+        assert "Would you prefer to continue in English, Hindi, or Gujarati?" in t, slug
 
 
 def test_the_logistics_agent_can_answer_about_the_guests_stay():
