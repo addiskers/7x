@@ -310,7 +310,10 @@ def test_the_reminder_agent_may_discuss_other_functions():
     prohibition in the prompt."""
     seed = _shipped()["event_reminder"]
     assert "Do NOT volunteer details about any other function" not in seed["prompt_template"]
-    assert "{schedule}" in seed["prompt_template"]
+    # schedule_detail carries every function AND its highlights; plain {schedule} is the
+    # lookup-only form. Either satisfies "can discuss other functions".
+    t = seed["prompt_template"]
+    assert "{schedule}" in t or "{schedule_detail}" in t
 
 
 def test_both_agents_escalate_instead_of_hanging_up():

@@ -67,7 +67,7 @@ KNOWN_PLACEHOLDERS = frozenset({
     "event_name", "event_date", "event_date_spoken", "event_time", "event_end_time",
     "venue", "venue_address", "dress_code", "announcement", "audience",
     # the whole wedding's schedule, filtered to what THIS guest is invited to
-    "schedule", "event_count",
+    "schedule", "schedule_detail", "event_count",
 })
 
 
@@ -211,6 +211,53 @@ def build_schedule(events, *, side=None, today=None, current_event_id=None):
     return "\n".join(lines)
 
 
+def build_schedule_detail(events, *, side=None, today=None):
+    """The guest's functions WITH their highlights, for a call that briefs all of them.
+
+        Hi-Tea - on the twenty-fifth of September, four in the evening, at Harvest.
+          Evening refreshments, with light snacks and drinks, from four until six.
+
+    build_schedule is the lookup list ("what time is the Mehendi?"); this is the script
+    for a call whose whole purpose is to walk through the evening. It is the only place
+    an announcement is spoken for a function the call is not about, so a wedding gets
+    richer calls purely by filling in announcements — no prompt edit.
+
+    Same side filtering and the same spoken date/time helpers as build_schedule: a time
+    must never reach the model as digits."""
+    blocks = []
+    for e in events or []:
+        if not guest_can_attend(e, side):
+            continue
+        name = str(e.get("name") or "").strip()
+        if not name:
+            continue
+        parts = []
+        when = _when_phrase(e.get("event_date"), today) if today else ""
+        if not when:
+            when = _spoken_date(e.get("event_date"))
+            when = f"on {when}" if when else ""
+        if when:
+            parts.append(when)
+        spoken_time = _spoken_time(e.get("start_time"))
+        if spoken_time:
+            parts.append(spoken_time)
+        venue = str(e.get("venue") or "").strip()
+        if venue:
+            parts.append(f"at {venue}")
+        line = f"{name} - " + ", ".join(parts) + "." if parts else f"{name}."
+        audience = str(e.get("audience") or "all").strip().lower()
+        if audience == "groom":
+            line += " (a groom's-side function)"
+        elif audience == "bride":
+            line += " (a bride's-side function)"
+        block = [line]
+        announcement = str(e.get("announcement") or "").strip()
+        if announcement:
+            block.append(f"  {announcement}")
+        blocks.append("\n".join(block))
+    return "\n".join(blocks)
+
+
 def _side_phrase(side):
     side = str(side or "").strip().lower()
     if side == "groom":
@@ -320,6 +367,7 @@ def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None,
         _merge(ctx, {
             "schedule": build_schedule(events, side=side, today=today,
                                        current_event_id=e.get("id")),
+            "schedule_detail": build_schedule_detail(events, side=side, today=today),
             "event_count": str(len(attending)) if attending else "",
         })
 

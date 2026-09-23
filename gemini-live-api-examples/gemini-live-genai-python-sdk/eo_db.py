@@ -365,8 +365,10 @@ def schema_version() -> int:
 _STALE_MARKERS = ("EO Gujarat", "Raj Goodman", "AI First Mindset", "DoubleTree",
                   "Sir or Ma'am, am I speaking")
 _REQUIRED_FRAGMENTS = (
-    ("{schedule}", "cannot answer about other functions"),
-    ("SPEAK TO A PERSON", "hangs up when asked for a person"),
+    # Either the lookup list or the detailed walk-through counts: both give the agent
+    # every function, which is what "kisi or event ki details nahi de raha" was about.
+    (("{schedule}", "{schedule_detail}"), "cannot answer about other functions"),
+    (("SPEAK TO A PERSON",), "hangs up when asked for a person"),
 )
 
 
@@ -380,7 +382,8 @@ def stale_agent_reasons(agent) -> list:
     if not text:
         return []
     reasons = [f"still says '{m}'" for m in _STALE_MARKERS if m in text]
-    reasons += [why for frag, why in _REQUIRED_FRAGMENTS if frag not in text]
+    reasons += [why for frags, why in _REQUIRED_FRAGMENTS
+                if not any(f in text for f in frags)]
     return reasons
 
 

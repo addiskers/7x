@@ -59,11 +59,18 @@ ANNOUNCEMENTS = {
     "afterparty": "A DJ night with DJ Alex, a bar, and supper from half past eleven.",
 }
 
-# One sample guest so the Test panel has someone to render against. Replace with the
-# real guest list via Create Campaign -> upload.
+# Sample guests so the Test panel has someone to render against, and so a dry-run
+# campaign has a handful of rows. Replace with the real guest list via
+# Create Campaign -> upload. --phone overrides the first one's number.
+#
+# (name, phone, side, dietary, transport_mode, transport_number, arrival, departure, hotel)
 GUESTS = [
     ("Rajesh Kumar", "+919876543210", "", "vegetarian", "", "",
      "25 September", "26 September", ""),
+    ("Priya Singh",   "+919876543211", "", "", "", "", "", "", ""),
+    ("Amit Patel",    "+919876543212", "", "", "", "", "", "", ""),
+    ("Neha Sharma",   "+919876543213", "", "", "", "", "", "", ""),
+    ("Vikram Desai",  "+919876543214", "", "", "", "", "", "", ""),
 ]
 
 
@@ -126,6 +133,9 @@ def seed(phone=None):
 
     reminder = eo_db.get_agent_by_slug("event_reminder")
     logistics = eo_db.get_agent_by_slug("logistics_concierge")
+    if not reminder or not logistics:
+        raise SystemExit("The shipped agents are missing from this database. "
+                         "Run: python seed_demo_wedding.py --refresh-agents")
     print(f"agents: reminder=#{reminder['id']}  logistics=#{logistics['id']}")
     return wid, keys, owner, reminder, logistics
 
