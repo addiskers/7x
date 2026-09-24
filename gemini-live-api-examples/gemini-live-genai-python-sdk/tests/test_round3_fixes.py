@@ -10,40 +10,53 @@ import eo_auth
 import gemini_live
 
 
-# ------------------------------------------------- caller transcription is not en-IN-only
-def test_the_caller_is_transcribed_in_whatever_language_they_speak():
-    """"tried to talk in hindi but the AI could not understand" — the session's
-    language_code (the agent's VOICE, fixed for the call) was governing input
-    transcription too, so Hindi came back as garbled English."""
+# ----------------------------------------------------- caller transcription languages
+# language_auto, language_hints and language_codes are ONE oneof on the Live API server.
+# Setting two of them passed every SDK check and then failed EVERY call in production with
+# "1007 ... oneof field 'language_config' is already set". Verified against the live API:
+# hints-only and auto-only are accepted, both-together is refused, codes is Vertex-only.
+_LANGUAGE_ONEOF = ("language_auto", "language_hints", "language_codes")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_transcription_flag(monkeypatch):
+    monkeypatch.setattr(gemini_live, "_transcribe_lang_disabled", False)
+
+
+def test_the_transcription_config_never_sets_two_language_options():
     cfg = gemini_live._input_transcription_config().model_dump(exclude_none=True)
-    assert cfg.get("language_auto") is not None, "input transcription must auto-detect"
+    set_members = [k for k in _LANGUAGE_ONEOF if k in cfg]
+    assert len(set_members) <= 1, f"server rejects this oneof combination: {set_members}"
+
+
+def test_the_default_hints_cover_the_briefed_languages():
+    cfg = gemini_live._input_transcription_config().model_dump(exclude_none=True)
     codes = (cfg.get("language_hints") or {}).get("language_codes") or []
     for lang in ("en-IN", "hi-IN", "gu-IN", "mr-IN", "ta-IN"):
         assert lang in codes, f"{lang} missing from the transcription hints"
 
 
-def test_transcription_hints_are_configurable_and_may_be_empty(monkeypatch):
-    """A deployment that wants pure auto-detection sets the var empty; that must not
-    produce a hints object with an empty list, which the API would reject."""
+def test_empty_hints_mean_the_plain_config(monkeypatch):
+    """Plain is the config that ran in production before any of this; it is the safe
+    fallback, and it must not produce a hints object with an empty list."""
     monkeypatch.setenv("EO_TRANSCRIBE_LANGUAGE_HINTS", "")
+    assert gemini_live._input_transcription_config().model_dump(exclude_none=True) == {}
+
+
+def test_a_rejected_config_switches_every_later_session_to_plain():
+    """The SDK cannot see the server's oneof rule, so the first refusal must stop the
+    next connect from repeating it: a phone call's pre-warm fails, the cold connect
+    right after it has to succeed."""
+    err = Exception("1007 None. Invalid value at 'setup.input_audio_transcription' (oneof)")
+    assert gemini_live._note_setup_rejection(err) is True
+    assert gemini_live._input_transcription_config().model_dump(exclude_none=True) == {}
+
+
+def test_an_unrelated_connect_error_leaves_the_transcription_settings_alone():
+    """A network blip or a quota error says nothing about our transcription config."""
+    assert gemini_live._note_setup_rejection(Exception("1011 internal error")) is False
     cfg = gemini_live._input_transcription_config().model_dump(exclude_none=True)
-    assert "language_hints" not in cfg
-    assert cfg.get("language_auto") is not None
-
-
-def test_an_older_sdk_falls_back_instead_of_breaking_every_call(monkeypatch):
-    """language_auto/language_hints are newer than our pinned minimum. If they are
-    missing, transcription degrades — a call must never fail to connect over it."""
-    class _Boom:
-        def __init__(self, *a, **kw):
-            raise TypeError("unexpected keyword argument 'language_auto'")
-
-    monkeypatch.setattr(gemini_live.types, "AudioTranscriptionConfig", _Boom)
-    with pytest.raises(TypeError):
-        gemini_live.types.AudioTranscriptionConfig(language_auto=None)
-    # the helper swallows it and returns the plain config
-    monkeypatch.undo()
-    assert gemini_live._input_transcription_config() is not None
+    assert "language_hints" in cfg
 
 
 # --------------------------------------------------- agent endpoints are superadmin-only

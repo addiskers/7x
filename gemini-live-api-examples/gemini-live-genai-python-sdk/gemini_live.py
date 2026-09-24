@@ -42,29 +42,56 @@ FALLBACK_SYSTEM_INSTRUCTION = (
 _DEFAULT_TRANSCRIBE_HINTS = "en-IN,hi-IN,gu-IN,mr-IN,pa-IN,bn-IN,ta-IN,te-IN,kn-IN,ml-IN"
 
 
+# Set once the Live API has rejected our transcription language settings. Every later
+# session then uses the plain config, which is known to work.
+_transcribe_lang_disabled = False
+
+
 def _input_transcription_config():
-    """Transcribe the CALLER in whatever language they actually speak.
+    """How the CALLER's words are transcribed.
 
-    The session's speech_config.language_code sets the agent's speaking voice and is fixed
-    for the whole call. Left to govern input as well, a guest answering in Hindi came back
-    as garbled English: the agent could not respond, and the idle ladder read that as a
-    dead line and hung up on them — exactly the reported bug.
+    This is the text copy of what the guest said: call logs, the language stats, and the
+    bridge's text heuristics. It does NOT change what the model understands — a
+    native-audio model hears the audio itself.
 
-    language_auto detects per utterance; the hints bias it to the languages this platform
-    serves. Both fields are newer than the minimum SDK we pin, so an older google-genai
-    falls back to plain transcription rather than failing every call."""
+    language_hints biases the transcript toward the languages this platform serves.
+    language_auto, language_hints and language_codes are ONE oneof on the server
+    ('language_config'): setting two of them makes the Live API refuse the session with
+    1007, which failed every call. The SDK does not check this, so only one may ever be
+    set here. (language_codes is also Vertex-only.) An empty EO_TRANSCRIBE_LANGUAGE_HINTS
+    means the plain config."""
+    if _transcribe_lang_disabled:
+        return types.AudioTranscriptionConfig()
     hints = [h.strip() for h in
              (os.getenv("EO_TRANSCRIBE_LANGUAGE_HINTS", _DEFAULT_TRANSCRIBE_HINTS) or "").split(",")
              if h.strip()]
+    if not hints:
+        return types.AudioTranscriptionConfig()
     try:
         return types.AudioTranscriptionConfig(
-            language_auto=types.LanguageAuto(),
-            language_hints=types.LanguageHints(language_codes=hints) if hints else None,
-        )
-    except Exception as e:                  # older SDK: fields absent / different shape
+            language_hints=types.LanguageHints(language_codes=hints))
+    except Exception as e:                  # older SDK: the field is absent
         logger.warning(f"Live API transcription language hints unsupported ({e}); "
                        f"falling back to default transcription")
         return types.AudioTranscriptionConfig()
+
+
+def _note_setup_rejection(exc) -> bool:
+    """If the Live API refused the session over our transcription settings, turn them
+    off for the rest of this process and return True.
+
+    The SDK builds configs the server then rejects (see _input_transcription_config), and
+    a pre-send check cannot catch that. So the first refusal switches every later session
+    to the plain config: on a phone call the pre-warm fails, and the cold connect that
+    follows it succeeds; in the browser test the retry does."""
+    global _transcribe_lang_disabled
+    if "input_audio_transcription" not in str(exc) or _transcribe_lang_disabled:
+        return False
+    _transcribe_lang_disabled = True
+    logger.error("Live API rejected the input-transcription language settings (%s). "
+                 "Using plain transcription for every session from now on; fix "
+                 "EO_TRANSCRIBE_LANGUAGE_HINTS and restart.", str(exc)[:160])
+    return True
 
 
 class _PreopenedSession:
@@ -219,7 +246,11 @@ class GeminiLive:
         config = self._build_config()
         logger.info(f"Pre-connecting Gemini Live (model={self.model})")
         ctx = self.client.aio.live.connect(model=self.model, config=config)
-        session = await ctx.__aenter__()
+        try:
+            session = await ctx.__aenter__()
+        except Exception as e:
+            _note_setup_rejection(e)       # the cold connect that follows then succeeds
+            raise
         logger.info("Gemini Live session pre-opened")
         return _PreopenedSession(ctx, session)
 
@@ -406,6 +437,7 @@ class GeminiLive:
                 send_text_task.cancel()
                 receive_task.cancel()
         except Exception as e:
+            _note_setup_rejection(e)       # so the caller's retry connects with a plain config
             logger.error(f"Gemini Live session error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
             raise
         finally:
