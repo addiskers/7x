@@ -17,7 +17,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -1267,17 +1267,28 @@ def recent_call_counts(phones, since_iso: str) -> dict:
     return out
 
 
-def cc_find_recent_by_phone(phone: str) -> dict | None:
+def cc_find_recent_by_phone(phone: str, now=None) -> dict | None:
     """Most-relevant campaign contact for a phone number — the inbound caller-ID
     lookup ("who is calling us back, and what happened on our last attempt?").
     Prefers a contact in an ACTIVE (scheduled/live) campaign, then the most recent
-    row overall. Returns the contact joined with its campaign's name/status."""
+    row overall. Returns the contact joined with its campaign's name/status.
+
+    A CANCELLED campaign is not a conversation we had — its contacts never count. And a
+    call-back is only a call-back for a while: a row older than EO_INBOUND_HISTORY_DAYS
+    (default 7) is ignored, so a guest we rang in a test weeks ago is greeted with the
+    normal opening, not "we already spoke"."""
+    try:
+        days = float(os.getenv("EO_INBOUND_HISTORY_DAYS", "7") or 7)
+    except ValueError:
+        days = 7.0
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
     return _one(
         "SELECT cc.*, c.name AS campaign_name, c.status AS campaign_status "
         "FROM campaign_contacts cc JOIN campaigns c ON c.id = cc.campaign_id "
-        "WHERE cc.phone = ? "
+        "WHERE cc.phone = ? AND c.status <> 'cancelled' "
+        "AND COALESCE(cc.last_attempt_at, cc.updated_at, cc.created_at) >= ? "
         "ORDER BY (c.status IN ('scheduled','live')) DESC, cc.id DESC LIMIT 1",
-        (str(phone),),
+        (str(phone), cutoff),
     )
 
 

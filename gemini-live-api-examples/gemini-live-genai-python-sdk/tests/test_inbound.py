@@ -20,6 +20,12 @@ def _ago(**kw):
     return (NOW - timedelta(**kw)).isoformat()
 
 
+def _recent(**kw):
+    """Anchored to the REAL clock: the /plivo/answer webhook builds inbound context without
+    a `now`, so a row must be genuinely recent to count as call history there."""
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
+
+
 def _seed(eo_db, phone, name="Amman Kumar", status="live", campaign="July Event", **cc_over):
     """One campaign + one contact; returns (campaign_id, cc_id)."""
     cid = eo_db.create_campaign(campaign, "2026-07-01T00:00:00+00:00", 1, 4, 3, 1, status=status)
@@ -144,7 +150,7 @@ def test_answer_webhook_inbound_stashes_direction_and_trigger(fresh_eo_db, monke
     eo_db.init()
     monkeypatch.setattr(directory, "_MAP", {})
     cid, _ = _seed(eo_db, "+919824018000",
-                   attempts=1, last_attempt_at=_ago(minutes=20), last_error="no answer")
+                   attempts=1, last_attempt_at=_recent(minutes=20), last_error="no answer")
 
     import main
     from fastapi.testclient import TestClient
@@ -362,7 +368,7 @@ def test_a_call_back_to_a_campaign_keeps_its_history_aware_opening(fresh_eo_db, 
     "we tried calling you" from the campaign's own agent."""
     eo_db = fresh_eo_db
     eo_db.init()
-    cid, _ = _seed(eo_db, "+919824018000", attempts=1, last_attempt_at=_ago(minutes=20),
+    cid, _ = _seed(eo_db, "+919824018000", attempts=1, last_attempt_at=_recent(minutes=20),
                    last_error="no answer")
     meta = _answer(monkeypatch, "919824018000")
     assert meta["campaign_id"] == str(cid)
@@ -396,3 +402,33 @@ def test_a_posted_answer_webhook_recognises_the_inbound_caller(fresh_eo_db, monk
     assert meta["caller"] == "+917043020542"
     assert meta["name"] == "Heeren"
     assert meta["ctx"]["agent"]["slug"] == "wedding_schedule"
+
+
+# ------------------------------------------- how far back an inbound caller's history reaches
+# Live test, 25 Sep: Shivi rang in and, because she had been in TEST campaign 118, heard
+# "we have already had this conversation" instead of the schedule. Once the real campaign
+# is over, a guest ringing days later should not be told that either.
+def test_a_cancelled_campaign_never_counts_as_a_conversation_we_had(fresh_eo_db, monkeypatch):
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    _seed(eo_db, "+919824018000", status="cancelled", attempts=1,
+          last_attempt_at=_ago(minutes=5), rsvp_outcome="acknowledged")
+    out = inbound_context.build("+919824018000", now=NOW)
+    assert out["campaign_id"] is None
+    assert out["trigger"] == inbound_context.UNKNOWN_TRIGGER or "Amman" in out["trigger"]
+    assert "ALREADY had this conversation" not in out["trigger"]
+
+
+def test_campaign_history_expires_after_a_week(fresh_eo_db, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    real_now = datetime.now(timezone.utc)
+    _seed(eo_db, "+919824018000", status="completed", attempts=1,
+          last_attempt_at=(real_now - timedelta(days=9)).isoformat(), rsvp_outcome="acknowledged")
+    assert inbound_context.build("+919824018000")["campaign_id"] is None      # 9 days: forgotten
+    _seed(eo_db, "+919824018001", status="completed", attempts=1,
+          last_attempt_at=(real_now - timedelta(days=2)).isoformat(), rsvp_outcome="acknowledged")
+    assert inbound_context.build("+919824018001")["campaign_id"] is not None  # 2 days: remembered

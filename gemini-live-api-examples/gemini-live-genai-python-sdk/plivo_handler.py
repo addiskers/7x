@@ -254,6 +254,25 @@ _AGENT_QUESTION_RE = re.compile(
     r"are you (still )?there|can we count)\b", re.I)
 
 
+# The model narrating its own tool call instead of making it silently — a live test heard
+# "…Goodbye. call record outcome guest name Shivi note … outcome status acknowledged end
+# call". No real closing contains the function names, or the argument labels beside an
+# outcome value, so either is proof the turn has turned into bookkeeping read aloud.
+_TOOL_NARRATION_RE = re.compile(
+    # the function names, or the outcome_status label itself — never spoken in real speech
+    r"\b(record[ _]outcome|end[ _]call|outcome[ _]status|callback[ _]time[ _](text|iso))\b"
+    # or TWO argument labels read in sequence ("guest name Shivi note …"); one label alone
+    # is ordinary English ("please note the wrong number…") and must not count
+    r"|\bguest[ _]name\b.{0,120}\bnote\b|\bnote\b.{0,120}\bguest[ _]name\b", re.I)
+
+
+def _is_tool_narration(turn_text: str) -> bool:
+    """True when the agent's transcript has started reading its tool call out loud."""
+    t = re.sub(r"[^a-z0-9_ ]", " ", (turn_text or "").lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    return bool(_TOOL_NARRATION_RE.search(t))
+
+
 def _has_closing_repeat(turn_text: str) -> bool:
     """True when a known closing marker occurs twice in ONE turn's transcript (a doubled closing)."""
     t = re.sub(r"[^a-z0-9 ]", " ", (turn_text or "").lower())
@@ -1516,6 +1535,14 @@ class PlivoMediaBridge:
                         + (" and flushing queued playout" if flush else " (queued playout kept)"))
             if flush:
                 await self._flush_playout()
+        elif not self._suppress_turn and _is_tool_narration(self._turn_text):
+            # Transcription runs ahead of playout, so muting new audio now stops most of the
+            # narration before the guest hears it; the queued goodbye still plays out. The
+            # tool call itself still arrives as a real tool_call event and is recorded.
+            self._suppress_turn = True
+            self._suppress_turn_at = now
+            logger.info("Narration guard: the agent is reading its tool call aloud; dropping the rest "
+                        "of this turn's audio (queued playout kept)")
 
     async def _maybe_hello_storm(self, text: str):
         """"Hello? hello? hello?" while the agent is talking means the member can't hear it. Tell the

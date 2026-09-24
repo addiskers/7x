@@ -119,7 +119,7 @@ def build(raw_from, now=None):
         return out
 
     try:
-        cc = eo_db.cc_find_recent_by_phone(phone)
+        cc = eo_db.cc_find_recent_by_phone(phone, now=now)
     except Exception as e:
         logger.warning(f"Inbound context lookup failed for {phone}: {e}")
         cc = None

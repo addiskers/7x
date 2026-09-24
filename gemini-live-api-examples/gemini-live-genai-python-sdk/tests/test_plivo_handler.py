@@ -1339,3 +1339,47 @@ def test_a_tool_only_end_call_waits_for_the_answer_then_ends_after_it():
         {"type": "end_call"},
     ])
     assert answered == (True, True)
+
+
+# ------------------------------------------- the agent reading its tool call aloud
+# Live test, 25 Sep: "…We look forward to seeing you! Goodbye. call record outcome guest name
+# Shivi note Guest has food allergies strictly no peanuts and is vegetarian Call answered by
+# their assistant outcome status acknowledged end call" — every word of it spoken.
+_NARRATED_CLOSING = (
+    "Thank you so much for being part of the celebrations. We look forward to seeing you! "
+    "Goodbye. call record outcome guest name Shivi note Guest has food allergies strictly no "
+    "peanuts and is vegetarian Call answered by their assistant outcome status acknowledged end call"
+)
+
+
+def test_tool_narration_is_detected_and_ordinary_closings_are_not():
+    from plivo_handler import _is_tool_narration
+    assert _is_tool_narration(_NARRATED_CLOSING) is True
+    assert _is_tool_narration("Goodbye. record_outcome outcome_status acknowledged end_call") is True
+    # the argument labels beside an outcome value, even without a function name
+    assert _is_tool_narration("okay, guest name Shivi, note allergies, status acknowledged") is True
+    # real speech that happens to use these words in passing
+    assert _is_tool_narration("Thank you for being part of the celebrations, goodbye!") is False
+    assert _is_tool_narration("I'll make a note of that and someone will call you back.") is False
+    assert _is_tool_narration("Please note the Sufi Night starts at seven at Great Park.") is False
+    assert _is_tool_narration("") is False
+
+
+def test_narrated_tool_call_mutes_the_rest_of_the_turn_but_keeps_the_goodbye():
+    """Once the transcript turns into bookkeeping, NEW audio for the turn is dropped; the
+    goodbye already queued for playout is never flushed."""
+    async def run():
+        ws = FakeWS()
+        b = _bridge(ws)
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        for _ in range(5):                                   # the goodbye, already queued
+            await b._out_frames.put(b"\xff" * 160)
+        await b._on_agent_text("Thank you so much for being part of the celebrations. Goodbye.")
+        before = b._suppress_turn
+        await b._on_agent_text(" call record outcome guest name Shivi note allergies outcome status acknowledged")
+        after = b._suppress_turn
+        await b.audio_output_callback(b"\x00\x10" * 240)     # narration audio → dropped
+        cleared = any(p.get("event") == "clearAudio" for p in ws.sent)
+        return before, after, b._out_frames.qsize(), bool(b._residual), cleared
+    assert asyncio.run(run()) == (False, True, 5, False, False)
