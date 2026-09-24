@@ -516,6 +516,10 @@ def set_user_active(user_id: int, active: bool) -> None:
     _exec("UPDATE users SET active = ?, updated_at = ? WHERE id = ?", (1 if active else 0, _now(), user_id))
 
 
+def set_user_role(user_id: int, role: str) -> None:
+    _exec("UPDATE users SET role = ?, updated_at = ? WHERE id = ?", (role, _now(), int(user_id)))
+
+
 def set_user_provider(user_id: int, provider: str) -> None:
     _exec("UPDATE users SET provider = ?, updated_at = ? WHERE id = ?", (provider, _now(), int(user_id)))
 

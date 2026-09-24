@@ -103,7 +103,7 @@ export default function Layout() {
             <div className="userchip">
               <div className="who" style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: '0.82rem', fontWeight: 600 }}>{user?.name || user?.username}</div>
-                <div className="page-sub">{isAdmin ? 'Superadmin' : 'Admin'}</div>
+                <div className="page-sub">{isSuperadmin ? 'Super admin' : isAdmin ? 'Admin' : 'Staff'}</div>
               </div>
               <div className="avatar">{initials(user?.name, user?.username)}</div>
             </div>

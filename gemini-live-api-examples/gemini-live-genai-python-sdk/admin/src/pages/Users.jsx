@@ -32,6 +32,10 @@ export default function Users() {
     catch (e) { alert(e.message) }
   }
 
+  async function setRole(u, role) {
+    try { await api.patch(`/users/${u.id}`, { role }); load() } catch (e) { alert(e.message) }
+  }
+
   async function setProvider(u, provider) {
     try { await api.patch(`/users/${u.id}`, { provider }); load() }
     catch (e) { alert(e.message) }
@@ -67,7 +71,16 @@ export default function Users() {
               <tr key={u.id}>
                 <td style={{ fontWeight: 600 }}>{u.username}{u.id === me?.id && <span className="muted"> (you)</span>}</td>
                 <td>{u.name || <span className="muted">—</span>}</td>
-                <td><span className={`pill ${u.role === 'eo_admin' ? 'green' : 'blue'}`}>{u.role === 'eo_admin' ? 'Superadmin' : 'Admin'}</span></td>
+                <td>
+                  {u.is_superadmin || u.id === me?.id
+                    ? <span className={`pill ${u.is_superadmin ? 'amber' : u.role === 'eo_admin' ? 'green' : 'blue'}`}>{u.is_superadmin ? 'Super admin' : u.role === 'eo_admin' ? 'Admin' : 'Staff'}</span>
+                    : (
+                      <select value={u.role} onChange={(e) => setRole(u, e.target.value)} title="Admin sees every wedding and campaign; Staff only their own">
+                        <option value="eo_admin">Admin</option>
+                        <option value="eo_agent">Staff</option>
+                      </select>
+                    )}
+                </td>
                 <td>
                   <select value={u.provider || 'plivo'} onChange={(e) => setProvider(u, e.target.value)}>
                     <option value="plivo">Plivo</option>
@@ -103,8 +116,8 @@ export default function Users() {
           <div className="row"><label>Password</label><input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder="min 6 characters" /></div>
           <div className="row"><label>Role</label>
             <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
-              <option value="eo_agent">Admin — their own campaigns &amp; logs only, no cost</option>
-              <option value="eo_admin">Superadmin — full access, all data, cost, Users &amp; Settings</option>
+              <option value="eo_admin">Admin — every wedding, campaign and call; the super admin decides which tabs</option>
+              <option value="eo_agent">Staff — only the campaigns and call logs they create</option>
             </select>
           </div>
           <div className="row"><label>Provider</label>

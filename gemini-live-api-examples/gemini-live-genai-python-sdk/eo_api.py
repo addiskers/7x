@@ -355,7 +355,8 @@ async def me_password(request: Request):
 @router.get("/users")
 async def users_list(request: Request):
     eo_auth.require_eo_admin(request)
-    return JSONResponse({"items": eo_db.list_users()})
+    items = [dict(u, is_superadmin=eo_auth.is_superadmin(u)) for u in eo_db.list_users()]
+    return JSONResponse({"items": items})
 
 
 @router.post("/users")
@@ -386,6 +387,13 @@ async def users_update(user_id: int, request: Request):
         if int(user_id) == int(admin["id"]) and not body["active"]:
             raise HTTPException(status_code=400, detail="You cannot disable your own account")
         eo_db.set_user_active(int(user_id), bool(body["active"]))
+    if "role" in body:
+        # Changing your own role could lock the only admin out of Users/Settings.
+        if int(user_id) == int(admin["id"]):
+            raise HTTPException(status_code=400, detail="You cannot change your own role")
+        if body["role"] not in ("eo_admin", "eo_agent"):
+            raise HTTPException(status_code=400, detail="Role must be Admin or Staff")
+        eo_db.set_user_role(int(user_id), body["role"])
     if "provider" in body:
         if body["provider"] not in ("plivo", "enablex"):
             raise HTTPException(status_code=400, detail="Provider must be 'plivo' or 'enablex'")

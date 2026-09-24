@@ -239,3 +239,34 @@ def test_the_audit_log_filters_by_action_and_text(fresh_eo_db):
     assert db.list_audit(action="login")["total"] == 1
     assert db.list_audit(q="Ved")["total"] == 1
     assert db.audit_actions() == ["login", "login_failed", "wedding_created"]
+
+
+# ------------------------------------------------------------- changing a user's role
+def test_a_role_can_be_changed_but_never_your_own(fresh_eo_db):
+    """The client's login was created as Staff (own campaigns only) and there was no way to
+    promote it; an admin demoting themself would lose Users and Settings."""
+    import asyncio
+    from fastapi import HTTPException
+    db = fresh_eo_db
+    db.init()
+    h, s = eo_auth.hash_password("pw123456")
+    boss = db.create_user(username="boss", name="Boss", password_hash=h, password_salt=s, role="eo_admin")
+    client = db.create_user(username="client", name="C", password_hash=h, password_salt=s, role="eo_agent")
+
+    class _Req:
+        def __init__(self, body): self._b = body
+        async def json(self): return self._b
+        headers, client, query_params = {}, None, {}
+
+    real = eo_auth.require_eo_admin
+    eo_auth.require_eo_admin = lambda request: db.get_user(boss)
+    try:
+        asyncio.run(eo_api.users_update(client, _Req({"role": "eo_admin"})))
+        assert db.get_user(client)["role"] == "eo_admin"
+        with pytest.raises(HTTPException):
+            asyncio.run(eo_api.users_update(boss, _Req({"role": "eo_agent"})))
+        with pytest.raises(HTTPException):
+            asyncio.run(eo_api.users_update(client, _Req({"role": "superuser"})))
+    finally:
+        eo_auth.require_eo_admin = real
+    assert db.get_user(boss)["role"] == "eo_admin"

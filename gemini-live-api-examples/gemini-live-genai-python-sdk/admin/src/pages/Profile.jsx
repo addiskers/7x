@@ -4,7 +4,7 @@ import { useAuth } from '../auth.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 
 export default function Profile() {
-  const { user, isAdmin } = useAuth()
+  const { user, isAdmin, isSuperadmin } = useAuth()
   const [cur, setCur] = useState('')
   const [nw, setNw] = useState('')
   const [msg, setMsg] = useState('')
@@ -27,7 +27,7 @@ export default function Profile() {
         <div className="stack" style={{ gap: 14 }}>
           <div><label>Name</label><div>{user?.name || '—'}</div></div>
           <div><label>Username</label><div>{user?.username}</div></div>
-          <div><label>Role</label><span className={`pill ${isAdmin ? 'green' : 'blue'}`}>{isAdmin ? 'Superadmin' : 'Admin'}</span></div>
+          <div><label>Role</label><span className={`pill ${isSuperadmin ? 'amber' : isAdmin ? 'green' : 'blue'}`}>{isSuperadmin ? 'Super admin' : isAdmin ? 'Admin' : 'Staff'}</span></div>
         </div>
       </div>
 
