@@ -1224,3 +1224,71 @@ def test_a_native_script_question_after_the_goodbye_keeps_the_call_open(text):
         await b._on_caller_text(text)
         return b._pending_hangup_task, b._wrapping_up
     assert asyncio.run(run()) == (None, False)
+
+
+# ------------------------------------ ending on a question (Shivi's call, 25 Sep 01:58)
+# The agent answered "when is the Sufi Night?" with "…at Great Park, ma'am, is there
+# anything?" AND called end_call in that same turn; the note-taker's "Great Park" then
+# locked the hangup and "Can you say Great Park?" was never heard.
+def _run_loop(events):
+    class FakeGemini:
+        async def start_session(self, **kw):
+            for ev in events:
+                yield ev
+
+    async def run():
+        b = _bridge()
+        b.gemini = FakeGemini()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        b._spoke_since_user = True
+        await b._gemini_loop()
+        pending = b._pending_hangup_task is not None and not b._pending_hangup_task.done()
+        if b._pending_hangup_task:
+            b._pending_hangup_task.cancel()
+        if b._mute_record_task:
+            b._mute_record_task.cancel()
+        return pending, b._wrapping_up
+    return asyncio.run(run())
+
+
+def test_end_call_in_a_turn_that_ends_on_a_question_keeps_the_call_open():
+    pending, wrapping = _run_loop([
+        {"type": "tool_call", "name": "record_outcome", "args": {},
+         "result": {"outcome_status": "acknowledged"}},
+        {"type": "gemini", "text": "The Sufi Night is today at seven in the evening at Great Park, "
+                                   "ma'am. Is there anything else I can help you with?"},
+        {"type": "end_call"},
+        {"type": "turn_complete"},
+    ])
+    assert (pending, wrapping) == (False, False)
+
+
+def test_a_real_goodbye_after_the_question_still_ends_the_call():
+    """"Anything else? … have a lovely evening!" finishes on the goodbye, not the question."""
+    pending, wrapping = _run_loop([
+        {"type": "tool_call", "name": "record_outcome", "args": {},
+         "result": {"outcome_status": "acknowledged"}},
+        {"type": "gemini", "text": "Is there anything else? No? Then have a lovely evening, goodbye!"},
+        {"type": "end_call"},
+        {"type": "turn_complete"},
+    ])
+    assert (pending, wrapping) == (True, True)
+
+
+def test_a_tool_only_end_call_waits_for_the_answer_then_ends_after_it():
+    """end_call can come as its own turn just after the question: wait for the answer; once
+    the guest has answered "no, thanks", the next end_call does hang up."""
+    waiting = _run_loop([
+        {"type": "gemini", "text": "Do you have any questions about any of these?"},
+        {"type": "turn_complete"},
+        {"type": "end_call"},
+    ])
+    assert waiting == (False, False)
+    answered = _run_loop([
+        {"type": "gemini", "text": "Do you have any questions about any of these?"},
+        {"type": "turn_complete"},
+        {"type": "user", "text": "No, thank you."},
+        {"type": "end_call"},
+    ])
+    assert answered == (True, True)

@@ -252,6 +252,13 @@ def _looks_like_agent_question(turn_text: str) -> bool:
     return bool(_AGENT_QUESTION_RE.search(t))
 
 
+def _ends_with_question(turn_text: str) -> bool:
+    """True when the agent's turn FINISHES on a question — it is waiting for an answer.
+    "Anything else? … have a lovely evening!" finishes on the goodbye and is not one."""
+    t = (turn_text or "").strip().rstrip(" \"'”’)")
+    return t.endswith("?") or t.endswith("？")
+
+
 # An agent turn that reads like a sign-off — the ONLY kind of post-RSVP turn that may arm the bridge-side hangup.
 # Deliberately separate from _CLOSING_MARKERS (those are repeat-guard markers and include non-closings).
 # "speak soon" / "talk soon" are deliberately NOT here: they are how the agent paraphrases the
@@ -557,6 +564,10 @@ class PlivoMediaBridge:
         self._language_reopens = 0               # post-goodbye "switch to Gujarati" re-opens (capped)
         # The guest's FIRST reply decides the call's language (the prompt says so). When it came
         # back in a non-Latin script and the agent still answers in English, prompt it once.
+        # Set when end_call arrives inside the current agent turn; checked at turn_complete so a
+        # turn that ENDS ON A QUESTION ("…is there anything else?") keeps the line open.
+        self._end_call_this_turn = False
+        self._last_turn_ended_on_question = False   # cleared the moment the guest speaks
         self._first_reply_seen = False
         self._reply_language = None
         self._post_reply_agent_text = ""
@@ -1361,6 +1372,20 @@ class PlivoMediaBridge:
         self._post_rsvp_hangup_armed = self._rsvp_recorded
         logger.info(f"Wrap-up cleared ({reason}); call continues")
 
+    def _keep_open_after_question(self):
+        """The agent called end_call in a turn that FINISHED on a question ("…Great Park,
+        ma'am — is there anything else?"). It is waiting for an answer, so the call must not
+        end under the guest: cancel the hangup and start a fresh wrap-up cycle. The next
+        closing turn, or the post-outcome silence window, still ends the call."""
+        if self._pending_hangup_task and not self._pending_hangup_task.done():
+            self._pending_hangup_task.cancel()
+        self._pending_hangup_task = None
+        if self._wrapping_up:
+            self._clear_wrapping_up("agent ended its turn on a question")
+        self._ending = False
+        self._soft_end_at = 0.0
+        logger.info("end_call ignored: the agent's turn ended on a question — waiting for the answer")
+
     async def _reopen_for_language(self, text: str):
         """The guest asked to go on in another language after the goodbye: cancel the hangup, start a fresh
         wrap-up cycle, and tell the agent the call is not over — it has just said goodbye and would otherwise
@@ -1531,6 +1556,8 @@ class PlivoMediaBridge:
     async def _on_caller_text(self, text: str):
         """A caller transcription ("user" event): line-trouble and end-of-call decisions."""
         text = text or ""
+        if text.strip():
+            self._last_turn_ended_on_question = False    # they have answered
         if not self._first_reply_seen and self._agent_audio_started and text.strip():
             self._first_reply_seen = True
             self._reply_language = _script_language(text)
@@ -1645,11 +1672,15 @@ class PlivoMediaBridge:
                         if etype == "turn_complete":
                             self._cancel_resume()        # the turn finished on its own — no resume needed
                             self._last_agent_asked_question = _looks_like_agent_question(self._turn_text)
+                            self._last_turn_ended_on_question = _ends_with_question(self._turn_text)
+                            if self._end_call_this_turn and self._last_turn_ended_on_question:
+                                self._keep_open_after_question()
                             # After RSVP, a turn that READS LIKE A CLOSING ends the call muted so a bare "Hello"
                             # cannot re-engage; a checklist step / answer / question stays armed and waits.
                             self._maybe_end_after_closing_turn()
                         self._turn_open = False
                         self._turn_text = ""
+                        self._end_call_this_turn = False
                         self._suppress_turn = False
                         self._suppress_turn_at = 0.0
                         # Arm the mute only after agent audio PLAYED past the soft-end schedule — a tool-only or stale turn's turn_complete must not mute the real farewell.
@@ -1687,6 +1718,11 @@ class PlivoMediaBridge:
                                        if farewell_pending else ""))
                         self._enter_wrapping_up("end_call")
                         self._schedule_end(mute=not farewell_pending)
+                        self._end_call_this_turn = True
+                        # end_call as a separate tool-only turn, right after a turn that asked a
+                        # question the guest has not answered yet: the same wait applies.
+                        if not self._turn_open and self._last_turn_ended_on_question:
+                            self._keep_open_after_question()
                         continue           # stay live during the grace window
                     # Caller transcript → hello-storm, hold, and end-of-call decisions (see _on_caller_text).
                     if etype == "user":

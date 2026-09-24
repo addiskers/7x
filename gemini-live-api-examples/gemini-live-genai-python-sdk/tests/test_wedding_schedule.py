@@ -374,6 +374,17 @@ def test_why_are_you_calling_is_a_question_not_a_busy_signal():
         assert "Offer a callback at most ONCE" in t, slug
 
 
+def test_an_assistant_taking_notes_gets_the_full_schedule_and_no_early_goodbye():
+    """Shivi's call: "you are speaking with Shivi's assistant, I can take notes" got only
+    name/time/place and a goodbye, and the agent ended the call on its own question."""
+    t = _seed("wedding_schedule")["prompt_template"]
+    assert "an assistant offering to take a message or notes" in t
+    assert "give THE SCHEDULE exactly as you would to the guest" in t
+    assert "that is note-taking, not a goodbye" in t
+    for slug, seed in {s["slug"]: s for s in agent_seeds.SEEDS}.items():
+        assert "NEVER call end_call in a turn that asks a question" in seed["prompt_template"], slug
+
+
 def test_every_agent_handles_a_bad_line_and_a_call_screening_assistant():
     """Mansi's phone answered with "If you record your name and reason for calling, I'll see
     if this person is available", and her line then broke up — the agent gave up and booked
