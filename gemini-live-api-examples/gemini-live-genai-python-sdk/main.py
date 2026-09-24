@@ -331,6 +331,15 @@ def _resolve_call_context(agent_id=None, event_id=None, guest_id=None, wedding_i
             guest = eo_db.contact_by_phone(caller, wedding_id=wid)
         ctx["guest"] = guest
 
+        # A cold inbound call carries no campaign, and a global agent has no wedding, so
+        # nothing above names one — and without it the agent knows no functions at all.
+        # The guest's own wedding is the right one; for an unknown caller, the single
+        # active wedding is (an installation runs one wedding at a time).
+        if not wid:
+            wid = (guest or {}).get("wedding_id") or _sole_active_wedding_id()
+            if wid:
+                ctx["wedding"] = _cached("wedding", wid, eo_db.get_wedding)
+
         # The wedding's whole function list, so the agent can answer "what time is the
         # Mehendi?" instead of deflecting. Cached like the other rows — a six-campaign
         # burst must not re-read it per dial on the answer-webhook path.
@@ -362,6 +371,31 @@ def _resolve_identity(call_id, header_caller, header_name):
     caller = header_caller or meta.get("caller") or ""
     name = header_name or meta.get("name") or directory.first_name_for(caller)
     return caller, name
+
+
+def _sole_active_wedding_id():
+    """The one active wedding, when there is exactly one — the wedding an unknown inbound
+    caller must be about. None when there are none or several (never guess between two)."""
+    try:
+        active = [w for w in eo_db.list_weddings(status="active")]
+    except Exception:
+        return None
+    return active[0]["id"] if len(active) == 1 else None
+
+
+def _inbound_agent_id():
+    """The agent a cold inbound call (a guest dialling our number with no campaign
+    history) speaks with. EO_INBOUND_AGENT_SLUG names it; default the whole-schedule
+    agent, since a guest ringing in wants the plan for the evening. Returns "" when no
+    such active agent exists, so the caller falls back the usual way."""
+    slug = (os.getenv("EO_INBOUND_AGENT_SLUG", "wedding_schedule") or "").strip()
+    try:
+        agent = eo_db.get_agent_by_slug(slug) if slug else None
+    except Exception:
+        agent = None
+    if agent and agent.get("active", 1):
+        return str(agent["id"])
+    return ""
 
 
 def _resolve_trigger(call_id):
@@ -663,21 +697,29 @@ async def plivo_answer(request: Request):
     direction = (qp.get("Direction") or qp.get("direction") or "").lower()
     is_inbound = direction == "inbound" and not qp.get("caller")
     trigger = ""
+    inbound_agent_id = ""
     if is_inbound:
         inbound = inbound_context.build(caller)
         caller = inbound.get("phone") or caller
         name = name or inbound.get("name") or ""
         if inbound.get("campaign_id"):
             campaign_id = str(inbound["campaign_id"])
-        trigger = inbound.get("trigger") or ""
+            # A call-back to a campaign we ran: the history-aware trigger explains what
+            # happened last time, and the campaign supplies the agent.
+            trigger = inbound.get("trigger") or ""
+        else:
+            # A cold inbound call (no campaign history for this number): the inbound agent
+            # speaks its OWN opening, exactly as on an outbound call, and its guest lookup
+            # by number supplies the name when the guest list has it.
+            inbound_agent_id = _inbound_agent_id()
         logger.info(f"Inbound call from {caller}: named={'yes' if name else 'no'}, "
-                    f"campaign={campaign_id or '-'}")
+                    f"campaign={campaign_id or '-'}, agent={inbound_agent_id or 'campaign'}")
 
     # Which script this call speaks. Resolved HERE because the prompt is frozen into the
     # Live session at prewarm time, which happens on this webhook — before the media
     # stream exists.
     call_ctx = _resolve_call_context(
-        agent_id=qp.get("agent") or "", event_id=qp.get("event") or "",
+        agent_id=qp.get("agent") or inbound_agent_id or "", event_id=qp.get("event") or "",
         guest_id=qp.get("guest") or "", wedding_id=qp.get("wedding") or "",
         campaign_id=campaign_id, caller=caller)
     # An inbound call's own trigger (built from call history) wins; otherwise use the

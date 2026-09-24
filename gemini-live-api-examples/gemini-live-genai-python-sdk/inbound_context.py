@@ -73,9 +73,17 @@ def _when_phrase(last_attempt_iso, now=None):
 
 
 def _first_name(cc, phone):
-    """Campaign-contact name (the name we greeted them with on the outbound leg)
-    wins over the guest directory; either may be empty."""
+    """Campaign-contact name (the name we greeted them with on the outbound leg) wins;
+    then the wedding guest list (a guest who was never in a campaign still has a
+    name there); then the legacy CSV directory. Any may be empty."""
     name = str((cc or {}).get("name") or "").strip()
+    if name:
+        return name.split()[0]
+    try:
+        guest = eo_db.contact_by_phone(phone)
+    except Exception:
+        guest = None
+    name = str((guest or {}).get("name") or "").strip()
     if name:
         return name.split()[0]
     return directory.first_name_for(phone)

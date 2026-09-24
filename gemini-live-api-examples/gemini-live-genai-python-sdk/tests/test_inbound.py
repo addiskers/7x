@@ -300,3 +300,81 @@ def test_cancel_pending_callbacks_for_phone():
     n, a, b, c = asyncio.run(run())
     assert n == 1
     assert a == "cancelled" and b == "pending" and c == "pending"
+
+
+# ------------------------------------------------- cold inbound calls (no campaign history)
+# A guest dials one of our numbers. Before this the call fell to Event Reminder with a
+# generic "someone called us" opening, the wedding was never found (so the agent knew no
+# functions), and an unknown caller got "Their first name is. … speaking with ?".
+def _wedding_world(eo_db):
+    import eo_auth
+    eo_db.init()
+    eo_auth.seed_admin()
+    owner = [u for u in eo_db.list_users() if u["role"] == "eo_admin"][0]["id"]
+    wid = eo_db.create_wedding("Ved & Riya", created_by=owner,
+                               hospitality_team="Ved and Riya's Hospitality Team")
+    eo_db.create_event(wid, "Sufi Night", event_date="2030-01-01", start_time="19:00",
+                       venue="Great Park")
+    eo_db.bulk_upsert_contacts([("Heeren Agrawal", "+917043020542", "valid", {})],
+                               created_by=owner, wedding_id=wid)
+    return wid
+
+
+def _answer(monkeypatch, frm):
+    import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(directory, "_MAP", {})
+    main.invalidate_ctx_cache()
+    r = TestClient(main.app).get("/plivo/answer", params={
+        "Direction": "inbound", "From": frm, "To": "918031704911", "CallUUID": "cu-" + frm})
+    assert r.status_code == 200
+    return main._pending_call_meta.pop("cu-" + frm)
+
+
+@pytest.mark.parametrize("frm", ["917043020542", "+917043020542", "7043020542",
+                                 "07043020542", "0917043020542"])
+def test_a_guest_calling_in_gets_the_schedule_agent_by_name_in_every_number_format(
+        fresh_eo_db, monkeypatch, frm):
+    _wedding_world(fresh_eo_db)
+    meta = _answer(monkeypatch, frm)
+    ctx = meta["ctx"]
+    assert meta["caller"] == "+917043020542"
+    assert meta["name"] == "Heeren"
+    assert ctx["agent"]["slug"] == "wedding_schedule"
+    assert "Heeren" in meta["trigger"] and "speaking with Heeren" in meta["trigger"]
+    assert "Sufi Night" in ctx["system_instruction"]              # the wedding was found
+    assert "Ved and Riya's Hospitality Team" in ctx["system_instruction"]
+
+
+def test_an_unknown_caller_gets_the_schedule_with_a_nameless_opening(fresh_eo_db, monkeypatch):
+    _wedding_world(fresh_eo_db)
+    meta = _answer(monkeypatch, "919999900000")
+    ctx = meta["ctx"]
+    assert meta["name"] == ""
+    assert ctx["agent"]["slug"] == "wedding_schedule"
+    assert "first name is." not in meta["trigger"]
+    assert "never ask 'am I speaking with" in meta["trigger"]
+    assert "Sufi Night" in ctx["system_instruction"]              # the sole active wedding
+
+
+def test_a_call_back_to_a_campaign_keeps_its_history_aware_opening(fresh_eo_db, monkeypatch):
+    """The campaign path is untouched: a guest we rang and missed still hears
+    "we tried calling you" from the campaign's own agent."""
+    eo_db = fresh_eo_db
+    eo_db.init()
+    cid, _ = _seed(eo_db, "+919824018000", attempts=1, last_attempt_at=_ago(minutes=20),
+                   last_error="no answer")
+    meta = _answer(monkeypatch, "919824018000")
+    assert meta["campaign_id"] == str(cid)
+    assert meta["trigger"].startswith("[INBOUND")
+
+
+def test_inbound_agent_can_be_chosen_by_env_and_falls_back_when_switched_off(
+        fresh_eo_db, monkeypatch):
+    import main
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setenv("EO_INBOUND_AGENT_SLUG", "logistics_concierge")
+    assert main._inbound_agent_id() == str(eo_db.get_agent_by_slug("logistics_concierge")["id"])
+    eo_db.update_agent(eo_db.get_agent_by_slug("logistics_concierge")["id"], active=0)
+    assert main._inbound_agent_id() == ""

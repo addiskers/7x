@@ -186,3 +186,30 @@ Windows, that's a console encoding problem, not the SDK.)
 
 **Campaigns 2-6 never dial** — should not happen; the runner rotates order each tick.
 If it does, check `MAX_LIVE_CALLS` isn't 1.
+
+## Inbound calls (a guest rings one of our numbers)
+
+Point each Plivo number's **Answer URL** at:
+
+```
+https://<PUBLIC_URL host>/plivo/answer        method: GET
+```
+
+For the test server that is `https://7x-test.globalvoxinc.com/plivo/answer`. Set it in the
+Plivo console under **Phone Numbers → your number → Application** (or an Application whose
+Answer URL is that address, with **Hangup URL** left blank). Do this for **both** numbers
+(`+91 80 3170 4911` and `+91 80 3170 4910`) — nothing else changes between them.
+
+What the caller hears:
+
+- **Known guest** (their number is on a wedding's guest list): the inbound agent greets them
+  by first name and gives the schedule, exactly as on an outbound call.
+- **Unknown number**: the same agent, without a name and without asking "am I speaking
+  with…?".
+- **A guest we rang earlier** (a missed call-back): the campaign's own agent, with an opening
+  that says we tried to reach them.
+
+The inbound agent is `EO_INBOUND_AGENT_SLUG` (default `wedding_schedule`); if that agent is
+switched off the call falls back to the shipped reminder agent. Plivo delivers the caller's
+number in several shapes — `917043020542`, `+917043020542`, `7043020542`, `07043020542` — and
+all of them match the same guest.

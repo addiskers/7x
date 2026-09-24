@@ -163,8 +163,25 @@ _SCRIPT_LANGUAGES = (
 )
 
 
+# A first reply this short says nothing about language: "haan", "hello", "ji" are how most
+# guests answer any call, and the transcriber often writes them in Devanagari even when the
+# guest then speaks English. A live test (Shivi, 25 Sep 02:10) was pushed into Hindi by
+# exactly that. Only a reply with several words can carry a language signal.
+_MIN_WORDS_FOR_LANGUAGE = 3
+# Greeting / acknowledgement words in native script that carry no language signal at all,
+# whatever the word count — "हेलो हेलो हाँ" is still just a hello.
+_NEUTRAL_NATIVE = frozenset((
+    "हेलो", "हैलो", "हलो", "हेल्लो", "हाँ", "हां", "हा", "जी", "ओके", "ठीक", "है", "अच्छा",
+    "હેલો", "હલો", "હા", "જી", "ઓકે", "ઠીક", "સારું",
+))
+
+
 def _script_language(text: str):
-    """The language a transcript's script points to, or None when it is mostly Latin."""
+    """The language a transcript's script points to, or None when it is mostly Latin, or
+    when it is too short / too generic to tell (see _MIN_WORDS_FOR_LANGUAGE)."""
+    tokens = _native_tokens(text)
+    if len([t for t in tokens if t not in _NEUTRAL_NATIVE]) < _MIN_WORDS_FOR_LANGUAGE:
+        return None
     counts, latin = {}, 0
     for ch in text or "":
         if "a" <= ch.lower() <= "z":
@@ -1220,6 +1237,11 @@ class PlivoMediaBridge:
                     # `deaf_rescue_s` (keyed on the AGENT's silence so the repeats can't reset it).
                     agent_silent = now - self._last_agent_audio
                     caller_silent = now - self._last_caller_audio
+                    # The FAST path needs the caller to have paused. The DEAF path must not (a guest
+                    # going "hello? hello?" into a mute agent never pauses), so it keys only on the
+                    # agent's silence — and the nudge text itself forbids re-delivering anything,
+                    # because on a live test it fired mid-sentence and the whole schedule was
+                    # spoken twice.
                     if (not self._reply_nudged
                             and self._last_caller_audio > self._last_agent_audio
                             and ((caller_silent >= reply_rescue_s and agent_silent >= reply_rescue_s)
@@ -1229,7 +1251,8 @@ class PlivoMediaBridge:
                                     f"{caller_silent:.1f}s; prompting it to reply")
                         await self.text_input_queue.put(
                             "[The member just said something and is waiting. If you caught it, "
-                            "reply NOW; if you did not catch it, politely ask them to repeat. "
+                            "reply to THAT in one short line — never re-deliver the schedule or anything "
+                            "you already said; if you did not catch it, politely ask them to repeat. "
                             "ONE short line only — never re-deliver something you already said; "
                             "if a question of yours is still unanswered, just re-ask it briefly.]")
                         continue

@@ -515,6 +515,36 @@ def test_missed_reply_rescue_fires_while_caller_keeps_talking(monkeypatch):
     assert len(asyncio.run(run())) == 1
 
 
+def test_missed_reply_nudge_never_asks_for_a_redelivery(monkeypatch):
+    """Live test, 25 Sep 02:06: the deaf rescue fired mid-conversation and the model, told to
+    "reply NOW", read the entire schedule out a second time. Whatever triggers it, the nudge
+    must ask for one line about what the guest just said and forbid repeating the script."""
+    monkeypatch.setenv("EO_SILENCE_CHECK", "true")
+    monkeypatch.setenv("EO_DEAF_RESCUE_SECONDS", "0.3")
+
+    async def run():
+        b = _bridge()
+        b._agent_audio_started = True
+        t = time.monotonic()
+        b._last_agent_audio = t - 10
+        b._last_caller_audio = t - 1
+        b._last_activity = t - 1
+        task = asyncio.create_task(b._idle_hangup_guard())
+        await asyncio.sleep(1.5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if b._pending_hangup_task:
+            b._pending_hangup_task.cancel()
+        msgs = []
+        while not b.text_input_queue.empty():
+            msgs.append(b.text_input_queue.get_nowait())
+        return [m for m in msgs if "said something" in m]
+
+    (msg,) = asyncio.run(run())
+    assert "never re-deliver the schedule" in msg
+    assert "reply NOW" not in msg
+
+
 def test_missed_reply_rescue_stays_quiet_when_agent_already_replied(monkeypatch):
     monkeypatch.setenv("EO_SILENCE_CHECK", "true")
     monkeypatch.setenv("EO_UNANSWERED_REPLY_SECONDS", "0.3")
@@ -1120,14 +1150,17 @@ def test_a_clear_farewell_after_the_outcome_still_ends_the_call(text):
     assert asyncio.run(run()) == (True, True)
 
 
-# ------------------------------------ following the guest's language (Apeksha's call)
-# She answered "हां, बोलो। हां, बोलो।" and the agent gave the whole schedule in English.
-def test_a_hindi_first_reply_answered_in_english_gets_one_switch_prompt():
+# ------------------------------------ following the guest's language
+# Apeksha answered "हां, बोलो" and got the schedule in English; the prompt below fixes that
+# for a REAL Hindi sentence. But Shivi (25 Sep 02:10) answered with one word the
+# transcriber wrote in Devanagari and was pushed into Hindi she never asked for — so a
+# greeting-length reply must never count as a language signal.
+def test_a_hindi_sentence_answered_in_english_gets_one_switch_prompt():
     async def run():
         b = _bridge()
         b.stream_id = "s1"
         b._agent_audio_started = True
-        await b._on_caller_text("हां, बोलो। हां, बोलो।")
+        await b._on_caller_text("हाँ जी बोलिए, क्या काम है आपको?")
         await b._on_agent_text("Great. Sir, we've arranged a nice high tea for you today at four")
         first = _queued(b)
         await b._on_agent_text(" in the evening. It's at Harvest, with refreshments and snacks.")
@@ -1137,6 +1170,20 @@ def test_a_hindi_first_reply_answered_in_english_gets_one_switch_prompt():
     assert len(first) == 1 and "Hindi or Marathi" in first[0]
     assert "If they were actually speaking English" in first[0]   # a check, not an order
     assert later == []
+
+
+@pytest.mark.parametrize("first_reply", ["हाँ", "हैलो", "हेलो हेलो हाँ", "जी", "हां, बोलो। हां, बोलो।", "હા બોલો"])
+def test_a_one_word_or_greeting_reply_never_triggers_the_prompt(first_reply):
+    """"haan", "hello", "haan bolo" say nothing about which language the guest wants."""
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text(first_reply)
+        await b._on_agent_text("Great. First, there's a high tea today at four in the evening at Harvest, "
+                               "with refreshments and light snacks for everyone.")
+        return _queued(b)
+    assert asyncio.run(run()) == []
 
 
 def test_no_prompt_when_the_agent_already_switched():

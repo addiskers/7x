@@ -566,6 +566,13 @@ def render_prompt(agent, *, wedding=None, event=None, guest=None, now=None, extr
     system_instruction, missing_prompt = render(agent.get("prompt_template") or "", ctx)
     trigger, missing_trigger = render(agent.get("trigger_template") or "", ctx)
 
+    # A trigger written around {guest_name} ("…ask if you are speaking with {guest_name}")
+    # renders into nonsense when the name is unknown — "Their first name is. … speaking
+    # with ?" — which on a cold inbound call made the agent ask an empty question. Treat
+    # a nameless render of a name-bearing trigger like no trigger at all.
+    if trigger and "guest_name" in missing_trigger:
+        trigger = ""
+
     if not trigger:
         # Every agent needs SOMETHING to open with — the Live API produces no audio until
         # it receives a turn. Fall back to a name-aware generic opening.
@@ -576,8 +583,9 @@ def render_prompt(agent, *, wedding=None, event=None, guest=None, now=None, extr
                        f'with {name}?" — say ONLY that, then STOP and wait.]')
         else:
             trigger = ("[The guest has just answered. You were NOT given their name — never "
-                       "invent one. Greet them warmly, say who you are calling on behalf of, "
-                       "and continue with the purpose of your call.]")
+                       "invent one and never ask 'am I speaking with…?'. Greet them warmly, say "
+                       "who you are calling on behalf of, and continue with the purpose of "
+                       "your call.]")
 
     missing = sorted(set(missing_prompt) | set(missing_trigger))
     if missing:

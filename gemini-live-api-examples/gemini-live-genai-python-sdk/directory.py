@@ -49,6 +49,12 @@ def normalize_phone(raw):
         return ""
     if plus:
         return "+" + digits
+    # Indian carriers deliver the same mobile as 9773127146, 919773127146, 09773127146
+    # or 0919773127146 depending on the trunk; all must match the one guest row.
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]                   # 0 + 10-digit domestic form
+    elif len(digits) == 13 and digits.startswith("091"):
+        digits = digits[1:]                   # 0 + 91 + 10 digits
     if len(digits) == 10:                 # bare Indian mobile
         return "+91" + digits
     if len(digits) == 12 and digits.startswith("91"):
