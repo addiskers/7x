@@ -364,6 +364,16 @@ def test_every_agent_forbids_asking_for_approval():
         assert '"does that sound good?"' in t, slug
 
 
+def test_why_are_you_calling_is_a_question_not_a_busy_signal():
+    """Live test: the guest cut in with "aap ye btae aapne call kis liye kra h" and the agent
+    replied "Should I call you later?" — then offered the callback AGAIN after "नहीं"."""
+    for slug, seed in {s["slug"]: s for s in agent_seeds.SEEDS}.items():
+        t = seed["prompt_template"]
+        assert "## IF THEY ASK WHY YOU ARE CALLING" in t, slug
+        assert "kis liye call kiya" in t, slug
+        assert "Offer a callback at most ONCE" in t, slug
+
+
 def test_every_agent_handles_a_bad_line_and_a_call_screening_assistant():
     """Mansi's phone answered with "If you record your name and reason for calling, I'll see
     if this person is available", and her line then broke up — the agent gave up and booked
