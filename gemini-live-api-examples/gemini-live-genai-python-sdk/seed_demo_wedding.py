@@ -51,13 +51,21 @@ EVENTS = [
 # function the call is actually about. The other two remain answerable by name, time and
 # venue from {schedule}.
 ANNOUNCEMENTS = {
-    "hitea": "Evening refreshments, with light snacks and drinks, from four until six.",
-    "sufi":  "There is a grand welcome with an ittar shower and a gajra, a mocktail bar, "
-             "and an interactive perfume-making experience. The couple enter at quarter "
-             "past eight, and Shadab Faridi performs live from half past eight. Dinner is "
+    "hitea": "Evening refreshments, light snacks and drinks, and a chance to meet the other "
+             "guests. It runs from four until six.",
+    "sufi":  "A grand welcome with an ittar shower and a gajra, a mocktail bar, and an "
+             "interactive perfume-making experience. The couple enter at quarter past eight, "
+             "and Shadab Faridi performs live Sufi music from half past eight. Dinner is "
              "served through the evening.",
-    "afterparty": "A DJ night with DJ Alex, a bar, and supper from half past eleven.",
+    "afterparty": "A DJ night with DJ Alex performing live, a bar, and late-night "
+                  "celebrations. Supper is served from half past eleven.",
 }
+
+# The phone numbers the sample GUESTS below (and the removed seed_ved_riya_campaign.py) put
+# on a wedding. Made up — they may belong to real strangers — so a whole-wedding campaign,
+# which ticks every guest, must never dial them.
+SAMPLE_PHONES = ("+919876543210", "+919876543211", "+919876543212", "+919876543213",
+                 "+919876543214")
 
 # Sample guests so the Test panel has someone to render against, and so a dry-run
 # campaign has a handful of rows. Replace with the real guest list via
@@ -263,6 +271,74 @@ def refresh_agents(force_all=False):
                   f"Re-run with --force-all to update it.")
 
 
+def _name_key(name):
+    """'Hi-Tea', 'Hi Tea' and 'hi tea' are the same function."""
+    return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+
+
+def set_events(wedding_id=None, replace=False, remove_sample_guests=False):
+    """Write EVENTS + ANNOUNCEMENTS onto an EXISTING wedding, for a live server.
+
+    Unlike the plain seed this touches nothing else: no sample guests, no wedding fields,
+    and it never creates a wedding. An event already there under the same name (ignoring
+    case and punctuation) is updated in place, so campaigns pointing at it stay valid.
+    Other events are only reported — removed with replace=True, and even then never one a
+    scheduled or live campaign is using."""
+    eo_db.init()
+    if wedding_id:
+        wedding = eo_db.get_wedding(int(wedding_id))
+    else:
+        matches = [w for w in eo_db.list_weddings() if w["name"] == WEDDING_NAME]
+        if len(matches) > 1:
+            raise SystemExit(f"{len(matches)} weddings are named '{WEDDING_NAME}'. "
+                             f"Pick one with --wedding ID (see --list-weddings).")
+        wedding = matches[0] if matches else None
+    if not wedding:
+        raise SystemExit("Wedding not found. Use --list-weddings, then --wedding ID.")
+    wid = wedding["id"]
+    print(f"Wedding #{wid} '{wedding['name']}'")
+
+    existing = {_name_key(e["name"]): e for e in eo_db.list_events(wid)}
+    wanted = set()
+    for order, (key, name, edate, start, venue, audience) in enumerate(EVENTS):
+        fields = dict(name=name, event_date=edate, start_time=start, venue=venue,
+                      audience=audience, sort_order=order,
+                      announcement=ANNOUNCEMENTS.get(key, ""))
+        k = _name_key(name)
+        wanted.add(k)
+        if k in existing:
+            eo_db.update_event(existing[k]["id"], **fields)
+            print(f"  updated  #{existing[k]['id']:<4} {name} — {start} at {venue}")
+        else:
+            eid = eo_db.create_event(wid, name, **{f: v for f, v in fields.items() if f != "name"})
+            print(f"  added    #{eid:<4} {name} — {start} at {venue}")
+
+    in_use = {c.get("event_id") for c in eo_db.active_campaigns() if c.get("event_id")}
+    for k, e in existing.items():
+        if k in wanted:
+            continue
+        if replace and e["id"] not in in_use:
+            eo_db.delete_event(e["id"])
+            print(f"  removed  #{e['id']:<4} {e['name']}")
+        elif replace:
+            print(f"  KEPT     #{e['id']:<4} {e['name']} — a scheduled/live campaign uses it")
+        else:
+            print(f"  extra    #{e['id']:<4} {e['name']} — not in the itinerary; guests will "
+                  f"hear about it too. Re-run with --replace-events to remove it.")
+
+    fakes = [c for c in eo_db.list_contacts(wedding_id=wid, limit=100000)["items"]
+             if c["phone"] in SAMPLE_PHONES]
+    if fakes and remove_sample_guests:
+        eo_db.delete_contacts([c["id"] for c in fakes])
+        print(f"  removed {len(fakes)} sample guest(s) with made-up numbers")
+    elif fakes:
+        print(f"\n  WARNING: {len(fakes)} sample guest(s) with made-up numbers are on this "
+              f"wedding: " + ", ".join(f"{c['name']} {c['phone']}" for c in fakes))
+        print("  A whole-schedule campaign ticks every guest and would ring them. "
+              "Re-run with --remove-sample-guests to delete them.")
+    print("\nCheck what the agent will say:  python seed_demo_wedding.py --preview schedule")
+
+
 def preview_schedule(wedding_id=None):
     """Render the Wedding Schedule agent for a wedding with NO event, exactly as a
     whole-schedule campaign call would. Read-only: unlike --preview EVENT_KEY it does not
@@ -314,7 +390,16 @@ def main():
                     help="print the rendered prompt; 'schedule' renders the Wedding Schedule "
                          "agent with no event, read-only")
     ap.add_argument("--wedding", metavar="ID", type=int,
-                    help="with --preview schedule, the wedding to render (default: this one)")
+                    help="with --preview schedule or --set-events, the wedding to use "
+                         "(default: the one named in WEDDING_NAME)")
+    ap.add_argument("--set-events", action="store_true",
+                    help="write the itinerary onto an EXISTING wedding — events only, no "
+                         "sample guests, no wedding changes; safe on the live server")
+    ap.add_argument("--replace-events", action="store_true",
+                    help="with --set-events, also remove events not in the itinerary "
+                         "(never one a scheduled/live campaign uses)")
+    ap.add_argument("--remove-sample-guests", action="store_true",
+                    help="with --set-events, delete the made-up sample guests from the wedding")
     ap.add_argument("--logistics", action="store_true",
                     help="with --preview, render the logistics agent instead")
     ap.add_argument("--list", action="store_true", help="list the event keys and exit")
@@ -331,6 +416,11 @@ def main():
     ap.add_argument("--yes", action="store_true",
                     help="with --delete-wedding, skip the confirmation prompt")
     args = ap.parse_args()
+
+    if args.set_events:
+        set_events(args.wedding, replace=args.replace_events,
+                   remove_sample_guests=args.remove_sample_guests)
+        return
 
     if args.preview == "schedule":
         preview_schedule(args.wedding)

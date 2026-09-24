@@ -220,3 +220,66 @@ def test_the_campaign_agent_list_never_carries_a_prompt(fresh_eo_db, monkeypatch
     assert {a["slug"] for a in items} >= {"event_reminder", "wedding_schedule", "logistics_concierge"}
     for a in items:
         assert "prompt_template" not in a and "trigger_template" not in a
+
+
+# ------------------------------------------------ --set-events on the live server's data
+def _server_like(db):
+    """Ved & Riya as it exists on the server: one bare event named slightly differently, a
+    stray event, the five made-up sample guests, a real guest, and a scheduled campaign."""
+    import seed_demo_wedding as sdw
+    h, s = eo_auth.hash_password("pw123456")
+    owner = db.create_user(username="boss", name="B", password_hash=h, password_salt=s,
+                           role="eo_admin")
+    wid = db.create_wedding(sdw.WEDDING_NAME, created_by=owner,
+                            hospitality_team="Ved and Riya's Hospitality Team")
+    bare = db.create_event(wid, "Sufi night", event_date="2026-09-25", start_time="19:00")
+    stray = db.create_event(wid, "Test function", event_date="2026-09-25")
+    rows = [(f"Fake {i}", p, "valid", {}) for i, p in enumerate(sdw.SAMPLE_PHONES)]
+    rows.append(("Heeren Agrawal", "+917043020542", "valid", {}))
+    db.bulk_upsert_contacts(rows, created_by=owner, wedding_id=wid)
+    agent = db.get_agent_by_slug("event_reminder")
+    cid = db.create_campaign("Live", "2026-09-25T11:00:00+00:00", owner, 4, 3, 1,
+                             status="scheduled", wedding_id=wid, event_id=bare,
+                             agent_id=agent["id"])
+    return wid, bare, stray, cid
+
+
+def test_set_events_fills_in_the_itinerary_without_touching_anything_else(fresh_eo_db):
+    import seed_demo_wedding as sdw
+    db = fresh_eo_db
+    db.init()
+    wid, bare, stray, _ = _server_like(db)
+    sdw.set_events()
+    events = {e["name"]: e for e in db.list_events(wid)}
+    assert set(events) == {"Hi-Tea", "Sufi Night", "After Party", "Test function"}
+    # the bare event is updated IN PLACE, so a campaign pointing at it stays valid
+    assert events["Sufi Night"]["id"] == bare
+    assert events["Sufi Night"]["venue"] == "Great Park"
+    assert "Shadab Faridi" in events["Sufi Night"]["announcement"]
+    assert events["After Party"]["start_time"] == "23:00"
+    # without the opt-in flags nothing is deleted
+    assert len(db.list_contacts(wedding_id=wid, limit=50)["items"]) == 6
+
+
+def test_set_events_opt_ins_remove_extras_and_fake_guests_but_not_in_use_events(fresh_eo_db):
+    import seed_demo_wedding as sdw
+    db = fresh_eo_db
+    db.init()
+    wid, bare, stray, cid = _server_like(db)
+    # a scheduled campaign now uses the stray event: it must survive --replace-events
+    db.get_conn().execute("UPDATE campaigns SET event_id = ? WHERE id = ?", (stray, cid))
+    db.get_conn().commit()
+    sdw.set_events(replace=True, remove_sample_guests=True)
+    assert "Test function" in {e["name"] for e in db.list_events(wid)}
+    guests = [c["name"] for c in db.list_contacts(wedding_id=wid, limit=50)["items"]]
+    assert guests == ["Heeren Agrawal"]
+
+
+def test_set_events_refuses_to_guess_between_two_weddings_with_the_same_name(fresh_eo_db):
+    import seed_demo_wedding as sdw
+    db = fresh_eo_db
+    db.init()
+    db.create_wedding(sdw.WEDDING_NAME)
+    db.create_wedding(sdw.WEDDING_NAME)
+    with pytest.raises(SystemExit):
+        sdw.set_events()
