@@ -33,6 +33,14 @@ export default function Agents() {
     } catch (e) { alert(e.message) } finally { setBusy(false) }
   }
 
+  // Shipped agents cannot be deleted (the app re-creates them on every restart), so
+  // "remove from use" means switching one off: it disappears from Create Campaign.
+  async function toggleActive(a) {
+    const off = !!a.active
+    if (off && !confirm(`Switch off "${a.name}"? It will no longer appear when creating a campaign. You can switch it back on here.`)) return
+    try { await api.patch(`/agents/${a.id}`, { active: off ? 0 : 1 }); load() } catch (e) { alert(e.message) }
+  }
+
   async function remove(a) {
     if (!confirm(`Delete "${a.name}"?`)) return
     try { await api.del(`/agents/${a.id}`); load() } catch (e) { alert(e.message) }
@@ -52,20 +60,20 @@ export default function Agents() {
       {!!custom.length && (
         <Section title={`Your agents${wedding ? ` — ${wedding.name}` : ''}`}
                  items={custom} onOpen={(a) => navigate(`/agents/${a.id}`)}
-                 onDuplicate={duplicate} onDelete={remove} busy={busy} />
+                 onDuplicate={duplicate} onDelete={remove} onToggle={toggleActive} busy={busy} />
       )}
 
       <Section
         title="Shipped templates"
         sub="Ready to use as they are. Duplicate one to change its wording for this wedding — the original stays untouched for everyone else."
         items={shipped} onOpen={(a) => navigate(`/agents/${a.id}`)}
-        onDuplicate={duplicate} busy={busy}
+        onDuplicate={duplicate} onToggle={toggleActive} busy={busy}
       />
     </div>
   )
 }
 
-function Section({ title, sub, items, onOpen, onDuplicate, onDelete, busy }) {
+function Section({ title, sub, items, onOpen, onDuplicate, onDelete, onToggle, busy }) {
   return (
     <div className="panel">
       <div className="panel-head">
@@ -76,10 +84,13 @@ function Section({ title, sub, items, onOpen, onDuplicate, onDelete, busy }) {
       </div>
       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill,minmax(min(300px,100%),1fr))', padding: 4 }}>
         {items.map((a) => (
-          <div key={a.id} className="card" style={{ padding: 16 }}>
+          <div key={a.id} className="card" style={{ padding: 16, opacity: a.active ? 1 : 0.55 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
               <h4 style={{ margin: 0 }}>{a.name}</h4>
-              <span className={`pill ${KIND_PILL[a.kind] || 'amber'}`}>{a.kind}</span>
+              <span style={{ display: 'flex', gap: 6 }}>
+                {!a.active && <span className="pill red">Off</span>}
+                <span className={`pill ${KIND_PILL[a.kind] || 'amber'}`}>{a.kind}</span>
+              </span>
             </div>
             <p className="muted" style={{ fontSize: '0.82rem', margin: '8px 0 0', minHeight: 34 }}>
               {a.description || 'No description'}
@@ -93,6 +104,11 @@ function Section({ title, sub, items, onOpen, onDuplicate, onDelete, busy }) {
                 {a.wedding_id ? 'Edit & Test' : 'View & Test'}
               </button>
               <button className="btn ghost sm" disabled={busy} onClick={() => onDuplicate(a)}>Duplicate</button>
+              {onToggle && (
+                <button className="btn ghost sm" onClick={() => onToggle(a)}>
+                  {a.active ? 'Switch off' : 'Switch on'}
+                </button>
+              )}
               {onDelete && a.wedding_id && (
                 <button className="btn danger sm" onClick={() => onDelete(a)}>Delete</button>
               )}

@@ -1118,3 +1118,109 @@ def test_a_clear_farewell_after_the_outcome_still_ends_the_call(text):
             b._pending_hangup_task.cancel()
         return pending, b._wrapping_up
     assert asyncio.run(run()) == (True, True)
+
+
+# ------------------------------------ following the guest's language (Apeksha's call)
+# She answered "हां, बोलो। हां, बोलो।" and the agent gave the whole schedule in English.
+def test_a_hindi_first_reply_answered_in_english_gets_one_switch_prompt():
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text("हां, बोलो। हां, बोलो।")
+        await b._on_agent_text("Great. Sir, we've arranged a nice high tea for you today at four")
+        first = _queued(b)
+        await b._on_agent_text(" in the evening. It's at Harvest, with refreshments and snacks.")
+        await b._on_caller_text("हां")                      # later Hindi: never a second prompt
+        return first, _queued(b)
+    first, later = asyncio.run(run())
+    assert len(first) == 1 and "Hindi or Marathi" in first[0]
+    assert "If they were actually speaking English" in first[0]   # a check, not an order
+    assert later == []
+
+
+def test_no_prompt_when_the_agent_already_switched():
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text("હા બોલો")
+        await b._on_agent_text("સરસ! કાલે સાંજે ચાર વાગ્યે Harvest માં Hi-Tea છે, અને")
+        await b._on_agent_text(" then the Sufi Night at seven in the evening at Great Park.")
+        return _queued(b)
+    assert asyncio.run(run()) == []
+
+
+def test_no_prompt_for_an_english_first_reply():
+    """Mansi's first reply was "Hello." — Latin — so nothing fires, even though a later
+    English sentence of hers came back in Devanagari ("सॉरी, आई कुड नॉट हियर यू")."""
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text("Hello.")
+        await b._on_caller_text("सॉरी, आई कुड नॉट हियर यू। कैन यू रिपीट दिस अगेन?")
+        await b._on_agent_text("Oh, sorry. I'm speaking from Ved and Riya's Hospitality Team.")
+        return _queued(b)
+    assert asyncio.run(run()) == []
+
+
+def test_speech_before_the_greeting_is_not_the_first_reply():
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        await b._on_caller_text("हेलो")                      # picked up, agent not yet speaking
+        return b._first_reply_seen
+    assert asyncio.run(run()) is False
+
+
+def test_the_script_ranges_are_the_real_unicode_blocks():
+    """Written as literal characters (several are unassigned code points): pin them so a
+    re-encode or an editor can never shift them silently."""
+    from plivo_handler import _SCRIPT_LANGUAGES
+    got = {lang: (ord(lo), ord(hi)) for lo, hi, lang in _SCRIPT_LANGUAGES}
+    assert got == {"Hindi or Marathi": (0x0900, 0x097F), "Bengali": (0x0980, 0x09FF),
+                   "Punjabi": (0x0A00, 0x0A7F), "Gujarati": (0x0A80, 0x0AFF),
+                   "Tamil": (0x0B80, 0x0BFF), "Telugu": (0x0C00, 0x0C7F),
+                   "Kannada": (0x0C80, 0x0CFF), "Malayalam": (0x0D00, 0x0D7F)}
+
+
+# -------------------------------------------- native-script replies are understood
+# Since the language hints, a Hindi/Gujarati guest's words arrive in their own script; the
+# romanised keyword lists missed every one of these.
+@pytest.mark.parametrize("text", [
+    "हेलो हेलो",
+    "आवाज़ नहीं आ रही है",
+    "सुनाई नहीं दे रहा",
+    "હેલો હેલો કરી કરી ના ઉડતી થઈ ગઈ એક વસ્તુ ન સંભળાઈ મને",
+    "हेलो हेलो करी करी ना उडती थई गई एक वस्तु न संभळाई मने नी",   # Mansi, as transcribed
+])
+def test_cant_hear_you_is_recognised_in_native_script(text):
+    from plivo_handler import _looks_like_hello
+    assert _looks_like_hello(text) is True
+
+
+@pytest.mark.parametrize("text", ["हां, बोलो", "ठीक है", "બરાબર", "आपसे मिलकर अच्छा लगा"])
+def test_ordinary_replies_are_not_line_trouble(text):
+    from plivo_handler import _looks_like_hello
+    assert _looks_like_hello(text) is False
+
+
+@pytest.mark.parametrize("text", ["एक मिनट रुकिए", "रुको ज़रा", "એક મિનિટ ઊભા રહો"])
+def test_hold_is_recognised_in_native_script(text):
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text(text)
+        return b._hold_until > time.monotonic()
+    assert asyncio.run(run()) is True
+
+
+@pytest.mark.parametrize("text", ["Hi-Tea कहाँ है", "कब शुरू होगा", "સૂફી નાઈટ ક્યારે છે"])
+def test_a_native_script_question_after_the_goodbye_keeps_the_call_open(text):
+    async def run():
+        b = _wrapped_up_bridge()
+        await b._on_caller_text(text)
+        return b._pending_hangup_task, b._wrapping_up
+    assert asyncio.run(run()) == (None, False)

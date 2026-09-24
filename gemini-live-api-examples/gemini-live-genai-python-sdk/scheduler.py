@@ -163,7 +163,17 @@ async def _tick():
                 if camp:
                     win = (camp.get("call_start_min"), camp.get("call_end_min"))
             except Exception:
-                win = None
+                camp, win = None, None
+            # A callback redials with its campaign's agent and event. Once that campaign is
+            # cancelled — a test run, or one set up on the wrong script — its callbacks must
+            # not ring guests the next morning. Completed campaigns keep theirs: a guest who
+            # said "call me later" is still owed that call.
+            if camp and camp.get("status") == "cancelled":
+                cb["status"] = "cancelled"
+                cb["last_error"] = "campaign cancelled"
+                await store.save_call(call)
+                logger.info(f"Callback for {cb.get('to')} cancelled: campaign #{cid} was cancelled")
+                continue
         if win is None:
             win = callbacks.global_window()
         if not callbacks.in_call_window(win[0], win[1]):

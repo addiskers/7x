@@ -699,14 +699,15 @@ async def agents_list(request: Request):
 async def agent_choices(request: Request):
     """The agents a campaign can use — names and shape only, never the prompt. Create
     Campaign needs this for every signed-in user; the full /agents rows (with the scripts)
-    stay admin-only."""
+    stay admin-only. Switched-off agents are left out: that is how a shipped agent, which
+    cannot be deleted, is taken out of use."""
     user = eo_auth.require_eo(request)
     wedding_id = request.query_params.get("wedding_id") or None
     if wedding_id:
         _wedding_or_404(user, wedding_id)
     keep = ("id", "wedding_id", "name", "slug", "kind", "description", "requires_event", "active")
     items = [{k: a.get(k) for k in keep}
-             for a in eo_db.list_agents(wedding_id=wedding_id, active_only=False)]
+             for a in eo_db.list_agents(wedding_id=wedding_id, active_only=True)]
     return JSONResponse({"items": items, "total": len(items)})
 
 
@@ -1013,6 +1014,10 @@ def _campaign_payload(user, body):
     agent = _agent_or_404(user, body["agent_id"]) if body.get("agent_id") else None
     if not agent:
         raise HTTPException(status_code=400, detail="Pick an agent for this campaign")
+    if not agent.get("active"):
+        raise HTTPException(status_code=400,
+                            detail=f"'{agent['name']}' is switched off. Switch it on in Agents, "
+                                   f"or pick another agent.")
     event = _event_or_404(user, body["event_id"]) if body.get("event_id") else None
     if agent.get("requires_event") and not event:
         raise HTTPException(status_code=400,

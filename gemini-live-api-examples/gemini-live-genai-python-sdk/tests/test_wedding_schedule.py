@@ -275,6 +275,40 @@ def test_set_events_opt_ins_remove_extras_and_fake_guests_but_not_in_use_events(
     assert guests == ["Heeren Agrawal"]
 
 
+def test_a_switched_off_agent_leaves_create_campaign_and_cannot_be_used(fresh_eo_db, monkeypatch):
+    """"delete other" — shipped agents cannot be deleted (init() re-creates any missing
+    slug on every restart), so taking one out of use means switching it off."""
+    import asyncio
+    db = fresh_eo_db
+    db.init()
+    user, wid = _campaign_world(db)
+    monkeypatch.setattr(eo_auth, "require_eo", lambda request: user)
+
+    class _Req:
+        query_params = {}
+
+    def choices():
+        return {a["slug"] for a in json.loads(asyncio.run(eo_api.agent_choices(_Req())).body)["items"]}
+
+    reminder = db.get_agent_by_slug("event_reminder")
+    db.update_agent(reminder["id"], active=0)
+    assert "event_reminder" not in choices() and "wedding_schedule" in choices()
+    with pytest.raises(HTTPException):
+        eo_api._campaign_payload(user, _body(reminder["id"], wid))
+
+    db.update_agent(reminder["id"], active=1)                 # reversible
+    assert "event_reminder" in choices()
+
+
+def test_a_restart_does_not_switch_an_agent_back_on(fresh_eo_db):
+    db = fresh_eo_db
+    db.init()
+    logistics = db.get_agent_by_slug("logistics_concierge")
+    db.update_agent(logistics["id"], active=0)
+    db.init()                                                  # what every restart runs
+    assert db.get_agent_by_slug("logistics_concierge")["active"] == 0
+
+
 def test_set_events_refuses_to_guess_between_two_weddings_with_the_same_name(fresh_eo_db):
     import seed_demo_wedding as sdw
     db = fresh_eo_db
@@ -283,3 +317,101 @@ def test_set_events_refuses_to_guess_between_two_weddings_with_the_same_name(fre
     db.create_wedding(sdw.WEDDING_NAME)
     with pytest.raises(SystemExit):
         sdw.set_events()
+
+
+# ------------------------------------------------- never miss a function (last test round)
+def test_the_schedule_turn_is_a_checklist_with_the_count_and_the_names():
+    """"it is only informing about the one event ... sometimes it misses one or more": the
+    agent was told to 'go through the list' with nothing to check itself against."""
+    now = datetime(2026, 9, 24, 18, 0, tzinfo=IST)
+    events = [{"name": "Hi-Tea", "event_date": "2026-09-25", "start_time": "16:00"},
+              {"name": "Sufi Night", "event_date": "2026-09-25", "start_time": "19:00"},
+              {"name": "After Party", "event_date": "2026-09-25", "start_time": "23:00"},
+              {"name": "Old Lunch", "event_date": "2026-09-20", "start_time": "13:00"}]
+    out = pr.render_prompt(_seed("wedding_schedule"), events=events, now=now,
+                           wedding={"hospitality_team": "Ved and Riya's Hospitality Team"})
+    si = out["system_instruction"]
+    assert "There are three functions to tell them about: Hi-Tea, Sufi Night and After Party." in si
+    assert "never stop after the first" in si
+    assert "Old Lunch" not in si
+
+
+def test_every_agent_forbids_asking_for_approval():
+    """The agent ended its turn with "Does that sound good?" — an RSVP-style question the
+    call is not meant to ask."""
+    for slug, seed in {s["slug"]: s for s in agent_seeds.SEEDS}.items():
+        t = seed["prompt_template"]
+        assert "Never ask for their approval or agreement" in t, slug
+        assert '"does that sound good?"' in t, slug
+
+
+def test_every_agent_handles_a_bad_line_and_a_call_screening_assistant():
+    """Mansi's phone answered with "If you record your name and reason for calling, I'll see
+    if this person is available", and her line then broke up — the agent gave up and booked
+    a callback."""
+    for slug, seed in {s["slug"]: s for s in agent_seeds.SEEDS}.items():
+        t = seed["prompt_template"]
+        assert "## IF THE LINE IS BAD" in t, slug
+        assert "A bad line is NOT a reason to end the call or book a callback" in t, slug
+        assert "## IF A CALL-SCREENING ASSISTANT ANSWERS" in t, slug
+        assert "record your name and reason for calling" in t, slug
+
+
+# ------------------------------------------------ callbacks on a cancelled campaign
+def _tick_world(monkeypatch, campaign_status):
+    """A pending callback on campaign 97, with every outside call stubbed."""
+    import asyncio
+    import callbacks
+    import dialer
+    import eo_db
+    import live
+    import scheduler
+    import store
+    call = {"id": "c1", "callback": {"status": "pending", "to": "+919773127146",
+                                     "campaign_id": 97, "attempts": 0}}
+    dialed = []
+
+    async def pending(now):
+        return [{"id": "c1"}]
+
+    async def load(cid):
+        return call
+
+    async def save(c):
+        return None
+
+    async def place(to, **kw):
+        dialed.append((to, kw.get("agent_id"), kw.get("event_id")))
+        return {"call_uuid": "x"}
+
+    async def not_paused(now):
+        return False
+
+    monkeypatch.setattr(store, "list_pending_callbacks", pending)
+    monkeypatch.setattr(store, "load_call", load)
+    monkeypatch.setattr(store, "save_call", save)
+    monkeypatch.setattr(dialer, "place_call", place)
+    monkeypatch.setattr(scheduler, "_is_paused", not_paused)
+    monkeypatch.setattr(callbacks, "in_call_window", lambda a, b: True)
+    monkeypatch.setattr(live, "room", lambda: 10)
+    monkeypatch.setattr(eo_db, "user_provider", lambda uid: None)
+    monkeypatch.setattr(eo_db, "get_campaign", lambda cid: {
+        "id": cid, "status": campaign_status, "call_start_min": 0, "call_end_min": 1439,
+        "agent_id": 9, "event_id": 25, "wedding_id": 4, "created_by": 1})
+    asyncio.run(scheduler._tick())
+    return call, dialed
+
+
+def test_a_callback_on_a_cancelled_campaign_is_cancelled_not_dialled(monkeypatch):
+    """Campaign 97 ran on the wrong script and booked callbacks for 10:00 the next day;
+    they redial with the campaign's agent and event, cancelled or not."""
+    call, dialed = _tick_world(monkeypatch, "cancelled")
+    assert dialed == []
+    assert call["callback"]["status"] == "cancelled"
+
+
+def test_a_callback_on_a_completed_campaign_still_rings(monkeypatch):
+    """A guest who said "call me later" is still owed that call after the campaign's
+    first pass finishes."""
+    call, dialed = _tick_world(monkeypatch, "completed")
+    assert dialed == [("+919773127146", 9, 25)]

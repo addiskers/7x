@@ -95,26 +95,103 @@ _HEAR_RE = re.compile(
     r"\b(are you there|(can|could) you hear|hear me|sun(o| rahe| rahi| sakte)|awaa?z|sambhal|sunai)\b", re.I)
 
 
+# Native-script forms of the words above. Since the input-transcription language hints went
+# in, a Hindi or Gujarati guest comes back in Devanagari / Gujarati script — "हेलो",
+# "आवाज़ नहीं आ रही", "एक मिनट रुकिए", "कहाँ है" — and the romanised lists no longer match
+# them: a Gujarati "I couldn't hear anything" was read as a bare acknowledgement and the call
+# hung up. Plain substrings, no \b: Indic vowel signs are not \w, so \b is unreliable there.
+_HELLO_NATIVE = frozenset(("हेलो", "हैलो", "हलो", "हेल्लो", "હેલો", "હલો", "હેલ્લો"))
+_HEAR_NATIVE_RE = re.compile(
+    r"सुनाई|सुन नहीं|सुन पा|आवाज़? नहीं|आवाज़? कट|आवाज़? टूट|संभळा|सम्भळा|"
+    r"સંભળા|સાંભળ|અવાજ|આવાજ")
+_HOLD_NATIVE_RE = re.compile(
+    r"रुकिए|रुकिये|रुको|रुक जा|एक मिनट|एक मिनिट|एक सेकंड|ज़रा रुक|"
+    r"ઊભા રહો|ઉભા રહો|એક મિનિટ|એક સેકન્ડ|થોડી વાર")
+_FOLLOWUP_NATIVE_RE = re.compile(
+    r"कब|कहाँ|कहां|क्या|कैसे|कितने|कितना|क्यों|कौन|बताइए|बताइये|बताओ|"
+    r"ક્યારે|ક્યાં|શું|કેવી રીતે|કેટલા|કેટલું|કોણ|કહો")
+
+
+def _native_tokens(text: str) -> list:
+    return [t.strip(".,!?।॥ ") for t in (text or "").split() if t.strip(".,!?।॥ ")]
+
+
 def _looks_like_hello(text: str) -> bool:
     """True for a short bare "hello? hello?" / "can you hear me?" (≤5 words) — the hello-storm signal."""
     words = re.findall(r"[a-z']+", (text or "").lower())
-    if not words or len(words) > 5:
-        return False
-    if all(w in _HELLO_WORDS or re.sub(r"(.)\1+", r"\1", w) in _HELLO_WORDS for w in words):
+    if words and len(words) <= 5:
+        if all(w in _HELLO_WORDS or re.sub(r"(.)\1+", r"\1", w) in _HELLO_WORDS for w in words):
+            return True
+        if _HEAR_RE.search(" ".join(words)):
+            return True
+    tokens = _native_tokens(text)
+    if tokens and len(tokens) <= 5 and all(t in _HELLO_NATIVE or t.lower() in _HELLO_WORDS for t in tokens):
         return True
-    return bool(_HEAR_RE.search(" ".join(words)))
+    # "I can't hear you" in Hindi/Gujarati is often a whole sentence — allow more words than
+    # the bare-hello check, it is the phrase that matters.
+    return bool(tokens) and len(tokens) <= 14 and bool(_HEAR_NATIVE_RE.search(text or ""))
 
 
 def _hello_word_count(text: str) -> int:
     """Hello-words in ONE transcript ("Hello. Hello. Hello." → 3): a single event can be a whole storm."""
     words = re.findall(r"[a-z']+", (text or "").lower())
-    return sum(1 for w in words if w in _HELLO_WORDS or re.sub(r"(.)\1+", r"\1", w) in _HELLO_WORDS)
+    latin = sum(1 for w in words if w in _HELLO_WORDS or re.sub(r"(.)\1+", r"\1", w) in _HELLO_WORDS)
+    return latin + sum(1 for t in _native_tokens(text) if t in _HELLO_NATIVE)
+
+
+def _is_hold(text: str) -> bool:
+    return bool(_HOLD_RE.search(text or "") or _HOLD_NATIVE_RE.search(text or ""))
+
+
+def _is_real_followup(text: str) -> bool:
+    return bool(_REAL_FOLLOWUP_RE.search(text or "") or _FOLLOWUP_NATIVE_RE.search(text or ""))
+
+
+# The caller transcript comes back in the script of the language they spoke, so the script of
+# their FIRST reply is a strong hint at their language. Not proof — an English sentence has
+# come back in Devanagari ("सॉरी, आई कुड नॉट हियर यू") — so this only ever PROMPTS the model,
+# which hears the audio, to check; it never decides. Devanagari covers Hindi and Marathi.
+_SCRIPT_LANGUAGES = (
+    ("ऀ", "ॿ", "Hindi or Marathi"),
+    ("ঀ", "৿", "Bengali"),
+    ("਀", "੿", "Punjabi"),
+    ("઀", "૿", "Gujarati"),
+    ("஀", "௿", "Tamil"),
+    ("ఀ", "౿", "Telugu"),
+    ("ಀ", "೿", "Kannada"),
+    ("ഀ", "ൿ", "Malayalam"),
+)
+
+
+def _script_language(text: str):
+    """The language a transcript's script points to, or None when it is mostly Latin."""
+    counts, latin = {}, 0
+    for ch in text or "":
+        if "a" <= ch.lower() <= "z":
+            latin += 1
+            continue
+        for lo, hi, lang in _SCRIPT_LANGUAGES:
+            if lo <= ch <= hi:
+                counts[lang] = counts.get(lang, 0) + 1
+                break
+    if not counts:
+        return None
+    lang, n = max(counts.items(), key=lambda kv: kv[1])
+    return lang if n > latin else None
+
+
+def _script_share(text: str, lang: str) -> tuple:
+    """(characters in `lang`'s script, Latin letters) in `text`."""
+    rng = next(((lo, hi) for lo, hi, name in _SCRIPT_LANGUAGES if name == lang), None)
+    own = sum(1 for ch in text or "" if rng and rng[0] <= ch <= rng[1])
+    latin = sum(1 for ch in text or "" if "a" <= ch.lower() <= "z")
+    return own, latin
 
 
 def _looks_like_goodbye(text: str) -> bool:
     """True only for a short caller sign-off with no real follow-up/question."""
     t = (text or "").strip().lower()
-    if not t or _QUESTION_RE.search(t):
+    if not t or _QUESTION_RE.search(t) or _FOLLOWUP_NATIVE_RE.search(t):
         return False
     if len(re.findall(r"[a-z']+", t)) > 7:          # too long to be a simple sign-off
         return False
@@ -134,7 +211,7 @@ _CLEAR_FAREWELL_RE = re.compile(
 
 def _looks_like_clear_farewell(text: str) -> bool:
     t = (text or "").strip().lower()
-    if not t or _QUESTION_RE.search(t):
+    if not t or _QUESTION_RE.search(t) or _FOLLOWUP_NATIVE_RE.search(t):
         return False
     if len(t.split()) > 7:
         return False
@@ -478,6 +555,12 @@ class PlivoMediaBridge:
         self._hangup_aborts = 0
         self._abort_locked = False               # no further voice aborts (a bare hello/ack/goodbye decided the end)
         self._language_reopens = 0               # post-goodbye "switch to Gujarati" re-opens (capped)
+        # The guest's FIRST reply decides the call's language (the prompt says so). When it came
+        # back in a non-Latin script and the agent still answers in English, prompt it once.
+        self._first_reply_seen = False
+        self._reply_language = None
+        self._post_reply_agent_text = ""
+        self._language_nudged = False
         self._goodbye_drained = False            # the goodbye audio has fully played out
         # Noise squelch (EO_NOISE_GATE, default OFF): below-gate frames are replaced by digital silence, NEVER dropped — the server VAD must hear the quiet to close a turn.
         self._gate_on = os.getenv("EO_NOISE_GATE", "false").strip().lower() in ("1", "true", "yes", "on")
@@ -1374,6 +1457,9 @@ class PlivoMediaBridge:
         self._turn_open = True           # a model turn is streaming (audio may lag the text)
         self._last_gemini_text_at = now
         self._turn_text += " " + (text or "")
+        if self._reply_language and not self._language_nudged:
+            self._post_reply_agent_text += " " + (text or "")
+            await self._maybe_language_nudge()
         if not self._suppress_turn and _has_closing_repeat(self._turn_text):
             self._suppress_turn = True
             self._suppress_turn_at = now
@@ -1419,13 +1505,40 @@ class PlivoMediaBridge:
             "callback and do NOT end the call. When they reply, continue from where you left off in shorter "
             "sentences.]")
 
+    async def _maybe_language_nudge(self):
+        """The guest's first reply came back in a non-Latin script (e.g. "हां, बोलो") and the
+        agent is now answering: if it has switched, stand down; if it is plainly still in
+        English, prompt it ONCE. The prompt tells the model to follow the first reply, and a
+        tester still got the whole schedule in English — this makes that switch dependable.
+        Worded as a check, not an order: an English sentence has come back in Devanagari
+        before, and only the model hears the audio."""
+        lang = self._reply_language
+        own, latin = _script_share(self._post_reply_agent_text, lang)
+        if own >= 3:
+            self._reply_language = None          # it is already speaking that language
+            return
+        if latin < 20:
+            return                               # too little said yet to tell
+        self._language_nudged = True
+        logger.info(f"Guest's first reply looked like {lang} but the agent is answering in English; "
+                    f"prompting it to switch")
+        await self.text_input_queue.put(
+            f"[The guest's first reply looked like {lang}. If that is what they are speaking, switch "
+            f"to it NOW and stay in it for the whole call — carry on from where you are, do not start "
+            f"over or repeat what you already said. If they were actually speaking English, ignore "
+            f"this and stay in English.]")
+
     async def _on_caller_text(self, text: str):
         """A caller transcription ("user" event): line-trouble and end-of-call decisions."""
         text = text or ""
+        if not self._first_reply_seen and self._agent_audio_started and text.strip():
+            self._first_reply_seen = True
+            self._reply_language = _script_language(text)
+            self._post_reply_agent_text = ""
         self._cancel_resume()                        # the member spoke — no "finish your sentence" needed
         await self._maybe_hello_storm(text)
         # Caller asked to hold: keep the line open, cancel any pending hangup — deterministic, not a sign-off.
-        if _HOLD_RE.search(text):
+        if _is_hold(text):
             try:
                 hold = float(os.getenv("EO_HOLD_GRACE_SECONDS", "30"))
             except ValueError:
@@ -1458,7 +1571,7 @@ class PlivoMediaBridge:
                 logger.info("Caller said goodbye; letting the hangup proceed")
                 if self._wrapping_up:
                     self._lock_abort_budget("mutual goodbye")
-            elif _REAL_FOLLOWUP_RE.search(text):
+            elif _is_real_followup(text):
                 # Post-goodbye, ONLY a genuine question re-opens the call.
                 self._pending_hangup_task.cancel()
                 self._pending_hangup_task = None
@@ -1475,7 +1588,7 @@ class PlivoMediaBridge:
         if self._wrapping_up:
             # The goodbye was given and its hangup was voice-aborted (nothing pending now) — THIS transcript decides.
             if (not _looks_like_hello(text) and not _looks_like_goodbye(text)
-                    and _REAL_FOLLOWUP_RE.search(text)):
+                    and _is_real_followup(text)):
                 logger.info(f"Post-goodbye real follow-up after a voice abort ({text!r}); keeping the call open")
                 self._clear_wrapping_up("post-abort real follow-up")
                 return

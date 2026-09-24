@@ -68,6 +68,7 @@ KNOWN_PLACEHOLDERS = frozenset({
     "venue", "venue_address", "dress_code", "announcement", "audience",
     # the whole wedding's schedule, filtered to what THIS guest is invited to
     "schedule", "schedule_detail", "upcoming_schedule", "event_count",
+    "upcoming_count", "upcoming_names",
 })
 
 
@@ -283,6 +284,32 @@ def build_schedule_detail(events, *, side=None, today=None, upcoming_only=False)
     return "\n".join(blocks)
 
 
+def upcoming_events(events, *, side=None, today=None):
+    """The functions still to come that this guest is invited to, in schedule order —
+    the same filter build_schedule_detail(upcoming_only=True) applies."""
+    out = []
+    for e in events or []:
+        if not guest_can_attend(e, side):
+            continue
+        if today:
+            d = _as_date(e.get("event_date"))
+            if d and d < today:
+                continue
+        out.append(e)
+    return out
+
+
+def _count_words(n):
+    return _ONES[n] if 0 < n < len(_ONES) else str(n)
+
+
+def _join_names(names):
+    """['Hi-Tea', 'Sufi Night', 'After Party'] -> 'Hi-Tea, Sufi Night and After Party'."""
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def _side_phrase(side):
     side = str(side or "").strip().lower()
     if side == "groom":
@@ -397,6 +424,16 @@ def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None,
                                                        upcoming_only=True),
             "event_count": str(len(attending)) if attending else "",
         })
+        # The checklist a whole-schedule call must tick off: how many functions are still
+        # to come for this guest, and their names in order. Given as a count AND a list so
+        # the model can check itself — left to "go through the list" it sometimes stopped
+        # after the first one.
+        upcoming = upcoming_events(events, side=side, today=today)
+        names = [str(ev.get("name") or "").strip() for ev in upcoming]
+        names = [n for n in names if n]
+        if names:
+            _merge(ctx, {"upcoming_count": _count_words(len(names)),
+                         "upcoming_names": _join_names(names)})
 
     # 6. caller overrides (the Test panel's sample values)
     _merge(ctx, extra)
