@@ -378,3 +378,21 @@ def test_inbound_agent_can_be_chosen_by_env_and_falls_back_when_switched_off(
     assert main._inbound_agent_id() == str(eo_db.get_agent_by_slug("logistics_concierge")["id"])
     eo_db.update_agent(eo_db.get_agent_by_slug("logistics_concierge")["id"], active=0)
     assert main._inbound_agent_id() == ""
+
+
+def test_a_posted_answer_webhook_recognises_the_inbound_caller(fresh_eo_db, monkeypatch):
+    """The Plivo console defaults the Answer URL to POST, which puts From/Direction/CallUUID
+    in the form body; reading only the query string there left the caller empty."""
+    import main
+    from fastapi.testclient import TestClient
+    _wedding_world(fresh_eo_db)
+    monkeypatch.setattr(directory, "_MAP", {})
+    main.invalidate_ctx_cache()
+    r = TestClient(main.app).post("/plivo/answer", data={
+        "Direction": "inbound", "From": "917043020542", "To": "918031704911",
+        "CallUUID": "cu-post-test"})
+    assert r.status_code == 200 and "<Stream" in r.text
+    meta = main._pending_call_meta.pop("cu-post-test")
+    assert meta["caller"] == "+917043020542"
+    assert meta["name"] == "Heeren"
+    assert meta["ctx"]["agent"]["slug"] == "wedding_schedule"

@@ -192,7 +192,7 @@ If it does, check `MAX_LIVE_CALLS` isn't 1.
 Point each Plivo number's **Answer URL** at:
 
 ```
-https://<PUBLIC_URL host>/plivo/answer        method: GET
+https://<PUBLIC_URL host>/plivo/answer        method: GET or POST (both work)
 ```
 
 For the test server that is `https://7x-test.globalvoxinc.com/plivo/answer`. Set it in the

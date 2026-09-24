@@ -681,7 +681,19 @@ async def plivo_answer(request: Request):
                   or "onrender.com" in host or "globalvoxinc.ai" in host)
     ws_url = f"{'wss' if secure else 'ws'}://{host}/plivo/media-stream"
 
-    qp = request.query_params
+    qp = dict(request.query_params)
+    # Plivo sends its call parameters (From, Direction, CallUUID…) in the query string on a
+    # GET Answer URL and in the form body on a POST one. The Plivo console defaults to
+    # POST, and reading only the query string there left the caller number empty, so an
+    # inbound call was never recognised as one. Our own outbound answer URLs carry their
+    # params in the query string, which still wins on a key clash.
+    if request.method == "POST":
+        try:
+            form = await request.form()
+            for k, v in form.items():
+                qp.setdefault(k, v)
+        except Exception as e:
+            logger.warning(f"/plivo/answer: could not read the POST form body: {e}")
     # Explicit caller param (/call-me, scheduler) wins; genuine inbound calls carry the number in `From`.
     caller = qp.get("caller") or qp.get("From") or qp.get("from") or ""
     gen = qp.get("gen", "")
