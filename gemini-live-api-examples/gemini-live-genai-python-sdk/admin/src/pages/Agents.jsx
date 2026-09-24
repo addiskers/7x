@@ -74,7 +74,7 @@ function Section({ title, sub, items, onOpen, onDuplicate, onDelete, busy }) {
           {sub && <div className="muted" style={{ fontSize: '0.8rem', marginTop: 3, maxWidth: 640 }}>{sub}</div>}
         </div>
       </div>
-      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', padding: 4 }}>
+      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill,minmax(min(300px,100%),1fr))', padding: 4 }}>
         {items.map((a) => (
           <div key={a.id} className="card" style={{ padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>

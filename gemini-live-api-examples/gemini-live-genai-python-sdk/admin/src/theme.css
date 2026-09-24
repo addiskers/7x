@@ -129,6 +129,7 @@ label { font-size: 0.72rem; font-weight: 500; color: var(--secondary); display: 
 .nav a.active::before { content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--green); }
 .nav a .ic { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; }
 .nav a.active .ic { opacity: 1; }
+.nav .nav-tag { margin-left: auto; font-size: 0.6rem; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .nav .group-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); padding: 14px 11px 6px; }
 .sidebar-foot { margin-top: auto; padding: 12px; border-top: 1px solid var(--border); }
 
@@ -277,53 +278,63 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--green); 
 .halves { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 
 /* ---------------------------------------------------------------------------------
-   Responsive. The app was desktop-only: a fixed 246px sidebar, 26px gutters and
-   centred modals with no overflow, so on a phone the content was squeezed into a
-   sliver and a tall form's Submit button could not be reached at all.
+   Responsive, following EPP. Desktop is untouched above 900px. Below that the sidebar
+   becomes a drawer that slides in from the ☰ button in the topbar, every multi-column
+   layout collapses to one column, and tables scroll sideways inside their card.
 
-   Approach: keep the desktop layout untouched above 900px. Below that the sidebar
-   becomes a horizontal scrolling strip rather than a hamburger drawer — it is a
-   short, flat nav, and a strip costs no JS, no open/close state and no focus trap.
+   Inline style={{ gridTemplateColumns }} cannot be overridden by a media query, so the
+   two-column page layouts carry a class (.editor-split, .detail-grid) instead.
    --------------------------------------------------------------------------------- */
+.menu-btn { display: none; align-items: center; justify-content: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 1.2rem; line-height: 1; }
+.drawer-backdrop { display: none; }
+.editor-split { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 280px; align-items: start; }
+.detail-grid { display: grid; gap: 10px; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); }
+.wedding-picker { min-width: 190px; height: 34px; font-size: 0.83rem; }
+/* The Create Campaign action bar. It is fixed to the viewport, so on desktop it must start
+   where the sidebar ends; on a phone the sidebar is a drawer and the bar spans the screen. */
+.fixed-bar { position: fixed; left: var(--sidebar-w); right: 0; bottom: 0; padding: 12px 26px; background: rgba(13,19,32,0.94); border-top: 1px solid var(--border); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: space-between; gap: 12px; z-index: 30; }
+.table-scroll { overflow-x: auto; }
+
 @media (max-width: 900px) {
   .shell { flex-direction: column; }
-
-  /* Sidebar -> top strip. Icons and labels stay; it scrolls sideways if it must. */
   .sidebar {
-    width: 100%; flex: 0 0 auto; height: auto;
-    position: static; border-right: 0; border-bottom: 1px solid var(--border);
+    position: fixed; top: 0; left: 0; bottom: 0; height: 100vh; width: min(82vw, 300px); flex: none;
+    z-index: 60; transform: translateX(-105%); transition: transform .18s ease-out; box-shadow: var(--shadow-lg);
   }
-  .brand { padding: 12px 16px; }
-  .nav {
-    flex-direction: row; overflow-x: auto; padding: 0 10px 8px; gap: 6px;
-    scrollbar-width: none;
-  }
-  .nav::-webkit-scrollbar { display: none; }
-  .nav a { white-space: nowrap; flex: 0 0 auto; }
-  .sidebar-foot { display: none; }        /* duplicated by the topbar user chip */
+  .sidebar.open { transform: translateX(0); }
+  .drawer-backdrop { display: block; position: fixed; inset: 0; background: rgba(4,6,10,.55); z-index: 55; animation: fade .12s ease-out; }
+  .menu-btn { display: inline-flex; }
+  .nav a { padding: 12px 11px; font-size: 0.9rem; }
 
-  .topbar { padding: 0 16px; gap: 10px; height: auto; min-height: 56px; flex-wrap: wrap; }
-  .topbar .page-title { font-size: 0.92rem; }
-  .content { padding: 16px; }
+  .topbar { padding: 0 12px; height: 52px; gap: 10px; }
+  .topbar .page-sub, .userchip .who { display: none; }
+  .wedding-picker { min-width: 0; max-width: 46vw; }
+  .content { padding: 12px; }
 
-  .page-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .page-head { flex-direction: column; align-items: stretch; gap: 10px; }
   .page-actions { flex-wrap: wrap; }
-  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-  .halves { grid-template-columns: 1fr; }
+  .editor-split, .grid.halves, .modal .two { grid-template-columns: 1fr !important; }
+  .stat-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
   .stat .value { font-size: 1.45rem; }
-  .modal .two { grid-template-columns: 1fr; }
-  .toolbar .search input { min-width: 0; width: 100%; }
-  .search { flex: 1 1 200px; }
+  .toolbar { gap: 7px; }
+  .toolbar input, .toolbar select { min-width: 0; flex: 1 1 45%; }
+  .search { flex: 1 1 100%; }
+  .search input { min-width: 0; width: 100%; }
+  table { font-size: 0.8rem; }
+  thead th, tbody td { padding-left: 10px; padding-right: 10px; }
+  .panel, .card { padding: 14px; }
+  .modal { max-width: 100% !important; padding: 16px; }
+  .fixed-bar { left: 0; padding: 10px 12px; }
+  /* touch: 16px inputs stop iOS zooming on focus; controls big enough for a thumb */
+  input, select, textarea { font-size: 16px; }
+  .btn.sm, .pager button { min-height: 40px; }
+  input[type="checkbox"] { width: 20px; height: 20px; }
 }
 
-@media (max-width: 560px) {
-  .content { padding: 12px; }
-  .stat-grid { grid-template-columns: 1fr 1fr; }
-  .userchip .page-sub, .userchip > div > div:first-child { font-size: 0.74rem; }
+@media (max-width: 600px) {
+  .stat-grid { grid-template-columns: 1fr; }
+  .detail-grid { grid-template-columns: 1fr; }
   .page-h1 { font-size: 1.15rem; }
-  /* A form control under 16px makes iOS Safari zoom the whole page on focus. */
-  input, select, textarea { font-size: 16px; }
-  .modal { padding: 18px; border-radius: 14px; }
   .modal .actions { flex-direction: column-reverse; }
   .modal .actions .btn { width: 100%; }
 }

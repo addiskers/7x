@@ -19,6 +19,7 @@ import Settings from './pages/Settings.jsx'
 import Profile from './pages/Profile.jsx'
 import Subscription from './pages/Subscription.jsx'
 import SuperAdmin from './pages/SuperAdmin.jsx'
+import AuditLog from './pages/AuditLog.jsx'
 
 function Protected({ children, adminOnly, superOnly }) {
   const { user, ready, isAdmin, isSuperadmin } = useAuth()
@@ -59,6 +60,7 @@ export default function App() {
         <Route path="/contacts" element={<Contacts />} />
         <Route path="/users" element={<Protected adminOnly><Users /></Protected>} />
         <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
+        <Route path="/audit" element={<Protected adminOnly><AuditLog /></Protected>} />
         <Route path="/subscription" element={<Subscription />} />
         <Route path="/superadmin" element={<Protected superOnly><SuperAdmin /></Protected>} />
         <Route path="/profile" element={<Profile />} />

@@ -75,6 +75,20 @@ _REAL_FOLLOWUP_RE = re.compile(
     r"laptop|claude|chatgpt|chrome|setup|install|account|link|website|"
     r"kya|kab|kahan|kaise|kitne|kyun|kaun|shu|kyare|kem|ketla|batao|bolo|bacche|bachche|patni|pati)\b", re.I)
 
+# A guest naming a language after the goodbye ("मैं गुजराती में बात करता हूं", "Hindi mein bolo") is asking
+# to KEEP talking, in that language — it is a statement, not a question, so _REAL_FOLLOWUP_RE missed it and
+# the bridge hung up on them. Latin names use \b; native-script names are plain substrings, because \b is
+# unreliable next to Indic vowel signs (they are not \w in Python's re).
+_LANGUAGE_SWITCH_RE = re.compile(
+    r"\b(english|angrezi|hindi|gujarati|gujrati|marathi|punjabi|bengali|bangla|tamil|telugu|kannada|malayalam)\b"
+    r"|अंग्रेज|इंग्लिश|हिंदी|हिन्दी|गुजराती|मराठी|पंजाबी|बंगाली|बांग्ला|तमिल|तेलुगु|कन्नड|मलयालम"
+    r"|ગુજરાતી|હિન્દી|હિંદી|અંગ્રેજી|ઇંગ્લિશ|ਪੰਜਾਬੀ|বাংলা|தமிழ்|తెలుగు|ಕನ್ನಡ|മലയാളം", re.I)
+
+
+def _looks_like_language_switch(text: str) -> bool:
+    return bool(_LANGUAGE_SWITCH_RE.search(text or ""))
+
+
 # "Hello? hello?" repeated while the agent is talking = the member can't hear (a LINE problem) — never a sign-off, never a callback request.
 _HELLO_WORDS = frozenset(("hello", "helo", "hallo", "halo", "hullo", "hulo", "hi", "hey"))
 _HEAR_RE = re.compile(
@@ -105,6 +119,26 @@ def _looks_like_goodbye(text: str) -> bool:
     if len(re.findall(r"[a-z']+", t)) > 7:          # too long to be a simple sign-off
         return False
     return bool(_GOODBYE_RE.search(t))
+
+
+# Stricter than _looks_like_goodbye, for the ONE place the bridge ends a call on the caller's word alone
+# (after record_outcome, when the agent has not ended it). "thank you", "great", "perfect", "done", "nothing"
+# are what a guest says while LISTENING to the details — treating them as a sign-off cut guests off mid-call.
+# Only an unmistakable farewell counts here; anything softer is left to the agent's own end_call and the
+# post-outcome silence window.
+_CLEAR_FAREWELL_RE = re.compile(
+    r"\b(bye+|goodbye|good ?bye|tata|ta ta|good ?night|see you|that'?s all|that is all|nothing else|"
+    r"okay bye|ok bye|chalo bye|alvida|aavjo|milte hain|shubh ratri)\b"
+    r"|शुभ ?रात्रि|अलविदा|बाय|आवजो|આવજો|બાય", re.I)
+
+
+def _looks_like_clear_farewell(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t or _QUESTION_RE.search(t):
+        return False
+    if len(t.split()) > 7:
+        return False
+    return bool(_CLEAR_FAREWELL_RE.search(t))
 
 
 # Within-turn repeat guard: stop feeding NEW audio once a known closing marker is voiced twice inside one turn.
@@ -443,6 +477,7 @@ class PlivoMediaBridge:
         self._wrapping_up = False
         self._hangup_aborts = 0
         self._abort_locked = False               # no further voice aborts (a bare hello/ack/goodbye decided the end)
+        self._language_reopens = 0               # post-goodbye "switch to Gujarati" re-opens (capped)
         self._goodbye_drained = False            # the goodbye audio has fully played out
         # Noise squelch (EO_NOISE_GATE, default OFF): below-gate frames are replaced by digital silence, NEVER dropped — the server VAD must hear the quiet to close a turn.
         self._gate_on = os.getenv("EO_NOISE_GATE", "false").strip().lower() in ("1", "true", "yes", "on")
@@ -1243,6 +1278,35 @@ class PlivoMediaBridge:
         self._post_rsvp_hangup_armed = self._rsvp_recorded
         logger.info(f"Wrap-up cleared ({reason}); call continues")
 
+    async def _reopen_for_language(self, text: str):
+        """The guest asked to go on in another language after the goodbye: cancel the hangup, start a fresh
+        wrap-up cycle, and tell the agent the call is not over — it has just said goodbye and would otherwise
+        treat the conversation as finished. Capped (EO_LANGUAGE_REOPEN_MAX, default 2) so a transcript that
+        keeps naming a language cannot hold a line open forever."""
+        max_reopen = int(_env_float("EO_LANGUAGE_REOPEN_MAX", 2))
+        if self._language_reopens >= max_reopen:
+            logger.info(f"Language switch after goodbye ({text!r}) but the reopen cap is spent "
+                        f"({self._language_reopens}/{max_reopen}); letting the end stand")
+            if self._wrapping_up and not (self._pending_hangup_task and not self._pending_hangup_task.done()):
+                self._lock_abort_budget("language reopen cap spent")
+                self._schedule_end(mute=True)
+            return
+        self._language_reopens += 1
+        if self._pending_hangup_task and not self._pending_hangup_task.done():
+            self._pending_hangup_task.cancel()
+        self._pending_hangup_task = None
+        if self._wrapping_up:
+            self._clear_wrapping_up("guest asked to switch language")
+        self._ending = False
+        self._soft_end_at = 0.0
+        logger.info(f"Caller asked to switch language after the goodbye ({text!r}); keeping the call open "
+                    f"({self._language_reopens}/{max_reopen})")
+        await self.text_input_queue.put(
+            "[The guest has just asked to continue in another language. The call is NOT over: do not say "
+            "goodbye and do not call end_call. Switch NOW to the language they asked for and stay in it. In "
+            "ONE short turn, say you are happy to continue in that language and ask whether they would like "
+            "you to go over the details again. Then stop and listen.]")
+
     def _maybe_end_after_closing_turn(self) -> bool:
         """turn_complete after record_outcome with no end_call: schedule the muted hangup ONLY if the turn
         that just finished reads like a closing. A checklist step, an answer or a question keeps the arm
@@ -1377,6 +1441,12 @@ class PlivoMediaBridge:
             logger.info(f"Caller asked to hold; staying on the line for {hold:.0f}s")
             return
         max_n = int(_env_float("EO_HANGUP_ABORT_MAX", 1))
+        # A request to carry on in another language outranks every end-of-call rule below: the guest has
+        # just told us they want to keep talking. Checked first so it wins over the bare-ack/lock paths.
+        if (self._wrapping_up or (self._pending_hangup_task and not self._pending_hangup_task.done())) \
+                and _looks_like_language_switch(text):
+            await self._reopen_for_language(text)
+            return
         # Decide what a caller utterance means around the end of the call.
         if self._pending_hangup_task and not self._pending_hangup_task.done():
             # Hello-shaped text is checked BEFORE the follow-up regex so "Hello? Hello?" (its "?") can't re-open the call.
@@ -1418,7 +1488,7 @@ class PlivoMediaBridge:
                 await self._flush_playout()          # drop a queued "are you still there?" — the goodbye has played
             self._schedule_end(mute=True)
             return
-        if self._rsvp_recorded and _looks_like_goodbye(text):
+        if self._rsvp_recorded and _looks_like_clear_farewell(text):
             # Caller signed off after the RSVP but the agent never called end_call — end it ourselves. mute=False so
             # the agent's farewell reply still plays; the mute arms on that turn's turn_complete. Before an RSVP exists
             # the model's own end_call decides: a garbled (non-English) transcript must never be able to hang up.

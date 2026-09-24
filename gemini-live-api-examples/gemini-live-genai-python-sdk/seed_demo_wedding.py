@@ -180,6 +180,29 @@ def delete_wedding(wid, assume_yes=False):
           f"{len(agents)} agent copies and {len(guests)} guests.")
 
 
+def template_for(agent, seeds):
+    """The shipped template a per-wedding copy was made from, or None.
+
+    The slug alone is not enough: duplicating into a wedding that already holds a copy
+    gives the new one a suffix ('event_reminder-2'), and an operator can rename it. So
+    try the exact slug, then the slug without a trailing -N, then the agent's kind —
+    the kind survives both a duplicate and an edit, and each shipped template has its
+    own."""
+    import re
+    by_slug = {s["slug"]: s for s in seeds}
+    slug = str(agent.get("slug") or "")
+    if slug in by_slug:
+        return by_slug[slug]
+    base = re.sub(r"-\d+$", "", slug)
+    if base in by_slug:
+        return by_slug[base]
+    by_kind = {}
+    for s in seeds:
+        by_kind.setdefault(s.get("kind"), []).append(s)
+    matches = by_kind.get(agent.get("kind")) or []
+    return matches[0] if len(matches) == 1 else None
+
+
 def _apply_seed(row, seed):
     eo_db.update_agent(row["id"],
                        name=seed["name"], kind=seed["kind"],
@@ -224,9 +247,16 @@ def refresh_agents(force_all=False):
         if not problems:
             print(f"  kept: '{a['name']}' (#{a['id']}) — per-wedding copy, looks current")
             continue
-        if force_all and a.get("slug") in by_slug:
-            _apply_seed(a, by_slug[a["slug"]])
-            print(f"  FORCED: '{a['name']}' (#{a['id']}) — was stale ({', '.join(problems)})")
+        seed = template_for(a, agent_seeds.SEEDS)
+        if force_all and seed:
+            _apply_seed(a, seed)
+            print(f"  FORCED: '{a['name']}' (#{a['id']}) — was stale ({', '.join(problems)}); "
+                  f"now the shipped {seed['slug']} script")
+        elif force_all:
+            print(f"  STALE:  '{a['name']}' (#{a['id']}) — {', '.join(problems)}")
+            print(f"          cannot tell which shipped script it was copied from "
+                  f"(slug '{a.get('slug')}', kind '{a.get('kind')}'), so it was left alone. "
+                  f"Point the campaign at a shipped agent instead.")
         else:
             print(f"  STALE:  '{a['name']}' (#{a['id']}) — {', '.join(problems)}")
             print(f"          guests on this agent still hear the old script. "

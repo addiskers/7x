@@ -228,11 +228,7 @@ export default function CreateCampaign() {
         />
       </div>
 
-      <div style={{
-        position: 'fixed', left: 'var(--sidebar-w)', right: 0, bottom: 0, padding: '12px 26px',
-        background: 'rgba(13,19,32,0.94)', borderTop: '1px solid var(--border)', backdropFilter: 'blur(8px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 30,
-      }}>
+      <div className="fixed-bar">
         <span className="muted"><b style={{ color: 'var(--text)' }}>{selected.size}</b> of {total} selected</span>
         <button className="btn" disabled={selected.size === 0 || !agentId || needsEvent} onClick={openConfirm}>
           Start Campaign

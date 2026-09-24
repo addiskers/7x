@@ -1003,3 +1003,118 @@ def test_a_malformed_listen_seconds_falls_back_rather_than_crashing_the_call():
     b = PlivoMediaBridge(FakeWS(), gemini_client=None, text_trigger="[go]",
                          listen_seconds="not a number")
     assert b.listen_seconds == 0.0
+
+
+# ---------------------------------------------- asking to switch language after the goodbye
+# Live call 7cccd613: the agent said goodbye, the guest answered "मैं तुमने गुजराती में बात करता हूं"
+# ("I'll talk in Gujarati"), and the bridge hung up — only a QUESTION could re-open the call, and this
+# is a statement. Naming a language after the goodbye means the guest wants to keep talking.
+def _wrapped_up_bridge(pending=False):
+    b = _bridge()
+    b.stream_id = "s1"
+    b._agent_audio_started = True
+    b._rsvp_recorded = True
+    b._wrapping_up = True
+    b._goodbye_drained = True
+    b._hangup_aborts = 1
+    b._ending = True
+    if pending:
+        b._schedule_end(mute=False)
+    return b
+
+
+def _queued(b):
+    out = []
+    while not b.text_input_queue.empty():
+        out.append(b.text_input_queue.get_nowait())
+    return out
+
+
+@pytest.mark.parametrize("text", [
+    "मैं तुमने गुजराती में बात करता हूं।",          # the exact transcript from the live call
+    "Hindi mein bolo",
+    "ગુજરાતીમાં વાત કરો",
+    "can we talk in Marathi",
+    "अंग्रेज़ी में बात कीजिए",
+])
+def test_a_language_switch_after_the_goodbye_keeps_the_call_open(text):
+    async def run():
+        b = _wrapped_up_bridge()
+        await b._on_caller_text(text)
+        nudges = _queued(b)
+        return (b._pending_hangup_task, b._wrapping_up, b._ending,
+                len(nudges) == 1 and "NOT over" in nudges[0])
+    assert asyncio.run(run()) == (None, False, False, True)
+
+
+def test_a_language_switch_cancels_a_pending_hangup():
+    async def run():
+        b = _wrapped_up_bridge(pending=True)
+        task = b._pending_hangup_task
+        await b._on_caller_text("Gujarati ma bolo")
+        await asyncio.sleep(0)
+        return task.cancelled(), b._pending_hangup_task, b._wrapping_up
+    assert asyncio.run(run()) == (True, None, False)
+
+
+def test_language_reopens_are_capped_so_a_call_cannot_be_held_open_forever():
+    async def run():
+        b = _wrapped_up_bridge()
+        for _ in range(2):
+            await b._on_caller_text("Hindi mein bolo")
+            b._wrapping_up, b._goodbye_drained, b._ending = True, True, True   # the agent said goodbye again
+        await b._on_caller_text("Hindi mein bolo")                             # third time: over the cap
+        pending = b._pending_hangup_task is not None and not b._pending_hangup_task.done()
+        if b._pending_hangup_task:
+            b._pending_hangup_task.cancel()
+        return b._language_reopens, pending, b._abort_locked
+    assert asyncio.run(run()) == (2, True, True)
+
+
+def test_naming_a_language_mid_call_changes_nothing():
+    """Only the end-of-call rules are affected: mid-conversation, the model handles a switch itself."""
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text("Hindi mein bolo")
+        return b._pending_hangup_task, b._wrapping_up, _queued(b)
+    assert asyncio.run(run()) == (None, False, [])
+
+
+@pytest.mark.parametrize("text", ["okay", "thanks bye", "theek hai", "haan ji", "shukriya", "ok thank you"])
+def test_ordinary_sign_offs_do_not_look_like_a_language_switch(text):
+    from plivo_handler import _looks_like_language_switch
+    assert _looks_like_language_switch(text) is False
+
+
+# ------------------------------------------------ listening sounds are not a sign-off
+# Client report: "if I just say 'okay' or 'barobar' to show I am listening, it suddenly hangs up.
+# It says 'thank you' and cuts the call." After record_outcome the bridge used to end the call on
+# any caller "thank you / great / perfect / done" — exactly what a guest says while listening.
+@pytest.mark.parametrize("text", ["okay", "barobar", "thank you", "okay thank you", "great",
+                                  "perfect", "done", "haan ji", "theek hai"])
+def test_a_listening_sound_after_the_outcome_does_not_hang_up(text):
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        b._rsvp_recorded = True
+        await b._on_caller_text(text)
+        return b._pending_hangup_task, b._wrapping_up
+    assert asyncio.run(run()) == (None, False)
+
+
+@pytest.mark.parametrize("text", ["ok bye", "bye", "good night", "शुभरात्रि", "આવજો"])
+def test_a_clear_farewell_after_the_outcome_still_ends_the_call(text):
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        b._rsvp_recorded = True
+        await b._on_caller_text(text)
+        pending = b._pending_hangup_task is not None
+        if b._pending_hangup_task:
+            b._pending_hangup_task.cancel()
+        return pending, b._wrapping_up
+    assert asyncio.run(run()) == (True, True)

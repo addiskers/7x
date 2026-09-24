@@ -137,3 +137,42 @@ def test_duplicating_an_agent_twice_does_not_500(fresh_eo_db):
         made.append(db.create_agent(f"copy{i}", src["prompt_template"], wedding_id=wid,
                                     created_by=owner, slug=slug))
     assert len(set(made)) == 3, "each duplicate must get its own row"
+
+
+# ------------------------------------------- --force-all must reach every stale copy
+@pytest.mark.parametrize("slug", ["event_reminder", "event_reminder-2", "my-custom-name"])
+def test_force_all_repairs_a_stale_copy_whatever_its_slug(fresh_eo_db, slug):
+    """On the server, --force-all reported agent #9 as STALE and left it: it only matched
+    copies whose slug equalled a template's exactly. A duplicate made into a wedding that
+    already had a copy is 'event_reminder-2', and an operator may rename it — the copy
+    kept speaking the old script, which hangs up on a guest who asks for a person."""
+    import seed_demo_wedding
+    db = fresh_eo_db
+    db.init()
+    eo_auth.seed_admin()
+    owner = [u for u in db.list_users() if u["role"] == "eo_admin"][0]["id"]
+    wid = db.create_wedding("W", created_by=owner)
+    stale = "Hello, am I speaking with {guest_name}? Old script with no escalation."
+    aid = db.create_agent("Old copy", stale, wedding_id=wid, created_by=owner,
+                          slug=slug, kind="reminder")
+    assert db.stale_agent_reasons(db.get_agent(aid))
+
+    seed_demo_wedding.refresh_agents(force_all=True)
+
+    assert db.stale_agent_reasons(db.get_agent(aid)) == []
+    assert "SPEAK TO A PERSON" in db.get_agent(aid)["prompt_template"]
+
+
+def test_a_copy_of_unknown_origin_is_left_alone(fresh_eo_db):
+    """If neither the slug nor the kind identifies a template, overwriting it with a
+    guess would be worse than reporting it."""
+    import seed_demo_wedding
+    db = fresh_eo_db
+    db.init()
+    eo_auth.seed_admin()
+    owner = [u for u in db.list_users() if u["role"] == "eo_admin"][0]["id"]
+    wid = db.create_wedding("W", created_by=owner)
+    aid = db.create_agent("Mystery", "old text", wedding_id=wid, created_by=owner,
+                          slug="mystery", kind="something-else")
+    seed_demo_wedding.refresh_agents(force_all=True)
+    assert db.get_agent(aid)["prompt_template"] == "old text"

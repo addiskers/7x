@@ -16,3 +16,5 @@ export const IconPhone = () => (<svg {...S} width="15" height="15"><path d="M22 
 export const IconDownload = () => (<svg {...S} width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>)
 export const IconRings = () => (<svg {...S}><circle cx="9" cy="14" r="6"/><circle cx="15" cy="14" r="6"/><path d="M9 8V5M7.5 5h3"/></svg>)
 export const IconAgent = () => (<svg {...S}><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V4M9 13h.01M15 13h.01M9.5 16.2a3.5 3.5 0 0 0 5 0"/><circle cx="12" cy="3" r="1.3"/></svg>)
+export const IconAudit = () => (<svg {...S}><path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>)
+export const IconAlert = () => (<svg {...S} width="15" height="15"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></svg>)

@@ -1,30 +1,30 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { api } from '../api.js'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { useWedding } from '../wedding.jsx'
 import {
-  IconDashboard, IconCampaigns, IconClock, IconUsers, IconSettings, IconUser,
-  IconLogout, IconRings, IconAgent, IconLogs,
+  IconDashboard, IconCampaigns, IconClock, IconUsers, IconSettings, IconUser, IconContacts,
+  IconLogout, IconRings, IconAgent, IconLogs, IconAudit, IconAlert,
 } from './icons.jsx'
 
-// Call Logs lives on the Dashboard; guests live inside Create Campaign, which is itself
-// reached from Campaigns ("New campaign") rather than having its own sidebar entry.
-//
-// `page` is the key the server uses in UI_PAGES / hidden_pages, so the super admin's
-// show-hide toggles drive this menu. Entries without a `page` can never be hidden.
-// Superadmin (role eo_admin) sees everything; Admin (eo_agent) is the CLIENT-facing role.
-// Note the UI labels invert the code names: eo_admin renders as "Superadmin".
+// `page` is the key the super admin (or EO_HIDDEN_PAGES) uses to take an entry off the
+// client's menu; the super admin sees every entry, with a "hidden" tag on the ones the client
+// does not get. `adminOnly` entries also need the eo_admin role (their endpoints refuse
+// anyone else), `superOnly` exist only for EO_SUPERADMIN_USERS, `agentOnly` only for eo_agent.
+// Create Campaign has no entry of its own: it opens from Campaigns ("+ Create Campaign").
 export const ADMIN_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/weddings', label: 'Weddings', icon: IconRings, page: 'weddings' },
-  { to: '/agents', label: 'Agents', icon: IconAgent, page: 'agents', adminOnly: true },
   { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns, page: 'campaigns' },
+  { to: '/contacts', label: 'Contacts', icon: IconContacts, page: 'contacts' },
   { to: '/scheduler', label: 'Scheduler', icon: IconClock, page: 'scheduler' },
-  { to: '/subscription', label: 'Subscription', icon: IconLogs, page: 'subscription' },
+  { to: '/agents', label: 'Agents', icon: IconAgent, page: 'agents', adminOnly: true },
+  { to: '/call-logs', label: 'Call Logs', icon: IconLogs, page: 'call-logs' },
   { to: '/users', label: 'Users', icon: IconUsers, page: 'users', adminOnly: true },
   { to: '/settings', label: 'Settings', icon: IconSettings, page: 'settings', adminOnly: true },
-  { to: '/superadmin', label: 'Super admin', icon: IconSettings, superOnly: true },
+  { to: '/audit', label: 'Audit Log', icon: IconAudit, page: 'audit', adminOnly: true },
+  { to: '/subscription', label: 'Subscription', icon: IconClock, page: 'subscription' },
+  { to: '/superadmin', label: 'Super admin', icon: IconAlert, superOnly: true },
   { to: '/profile', label: 'My Profile', icon: IconUser, agentOnly: true },
 ]
 
@@ -35,26 +35,19 @@ function initials(name, username) {
 }
 
 export default function Layout() {
-  const { user, isAdmin, isSuperadmin, logout } = useAuth()
+  const { user, isAdmin, isSuperadmin, isHidden, clientHidden, logout } = useAuth()
   const { weddings, weddingId, setWeddingId } = useWedding()
   const navigate = useNavigate()
-  const [hidden, setHidden] = useState([])
+  const location = useLocation()
+  const [open, setOpen] = useState(false)          // the drawer on small screens
 
-  // Which tabs the client may see. The super admin sets this; until it loads we show
-  // nothing extra rather than flashing a tab the client is not meant to have.
-  useEffect(() => {
-    if (isSuperadmin) { setHidden([]); return }
-    let alive = true
-    api.get('/ui-pages').then((r) => { if (alive) setHidden(r.hidden_pages || []) }).catch(() => {})
-    return () => { alive = false }
-  }, [isSuperadmin])
+  useEffect(() => { setOpen(false) }, [location.pathname])   // navigating closes the drawer
 
   const nav = ADMIN_NAV.filter((n) => {
     if (n.superOnly) return isSuperadmin
-    if (n.adminOnly) return isAdmin
+    if (n.adminOnly && !isAdmin) return false
     if (n.agentOnly) return !isAdmin
-    if (n.page && !isSuperadmin && hidden.includes(n.page)) return false
-    return true
+    return !isHidden(n.page)
   })
 
   function doLogout() {
@@ -64,7 +57,8 @@ export default function Layout() {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
+      {open && <div className="drawer-backdrop" onClick={() => setOpen(false)} />}
+      <aside className={`sidebar${open ? ' open' : ''}`}>
         <div className="brand">
           <div className="logo">7x</div>
           <div>
@@ -74,9 +68,12 @@ export default function Layout() {
         </div>
         <nav className="nav">
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>
+            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')} onClick={() => setOpen(false)}>
               <n.icon />
               <span>{n.label}</span>
+              {isSuperadmin && n.page && clientHidden.has(n.page) && (
+                <span className="nav-tag" title="The client's admins do not see this page">hidden</span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -89,21 +86,22 @@ export default function Layout() {
 
       <div className="main">
         <header className="topbar">
+          <button className="menu-btn" aria-label="Menu" onClick={() => setOpen((o) => !o)}>☰</button>
           <div id="topbar-title" />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginLeft: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 'auto', minWidth: 0 }}>
             {/* Which wedding everything else is scoped to. */}
             {weddings.length > 0 && (
               <select
+                className="wedding-picker"
                 value={weddingId || ''}
                 onChange={(e) => setWeddingId(Number(e.target.value))}
-                style={{ minWidth: 190, height: 34, fontSize: '0.83rem' }}
                 title="The wedding every screen is scoped to"
               >
                 {weddings.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </select>
             )}
             <div className="userchip">
-              <div style={{ textAlign: 'right' }}>
+              <div className="who" style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: '0.82rem', fontWeight: 600 }}>{user?.name || user?.username}</div>
                 <div className="page-sub">{isAdmin ? 'Superadmin' : 'Admin'}</div>
               </div>

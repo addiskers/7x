@@ -311,9 +311,12 @@ async def login(request: Request):
     body = await request.json()
     user = eo_auth.authenticate((body.get("username") or "").strip(), body.get("password") or "")
     if not user:
+        audit.log("login_failed", target=(body.get("username") or "").strip()[:80],
+                  request=request)
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = eo_auth.issue_token(user)
-    return {"ok": True, "token": token, "user": _me(user)}
+    audit.log("login", user=user, request=request)
+    return {"ok": True, "token": token, "user": _me(user), "ui": ui_config(user)}
 
 
 @router.post("/logout")
@@ -331,7 +334,7 @@ def _me(user) -> dict:
 @router.get("/me")
 async def me(request: Request):
     user = eo_auth.require_eo(request)
-    return {"ok": True, "user": _me(user)}
+    return {"ok": True, "user": _me(user), "ui": ui_config(user)}
 
 
 @router.post("/me/password")
@@ -357,7 +360,7 @@ async def users_list(request: Request):
 
 @router.post("/users")
 async def users_create(request: Request):
-    eo_auth.require_eo_admin(request)
+    admin = eo_auth.require_eo_admin(request)
     body = await request.json()
     username = (body.get("username") or "").strip().lower()
     if not username:
@@ -371,6 +374,7 @@ async def users_create(request: Request):
     provider = body.get("provider") if body.get("provider") in ("plivo", "enablex") else "plivo"
     h, s = eo_auth.hash_password(password)
     uid = eo_db.create_user(username, (body.get("name") or "").strip(), h, s, role, provider=provider)
+    audit.log("user_created", user=admin, target=username, detail={"role": role}, request=request)
     return {"ok": True, "id": uid}
 
 
@@ -386,6 +390,8 @@ async def users_update(user_id: int, request: Request):
         if body["provider"] not in ("plivo", "enablex"):
             raise HTTPException(status_code=400, detail="Provider must be 'plivo' or 'enablex'")
         eo_db.set_user_provider(int(user_id), body["provider"])
+    audit.log("user_updated", user=admin, target=str(user_id),
+              detail={k: v for k, v in body.items() if k != "password"}, request=request)
     return {"ok": True}
 
 
@@ -551,6 +557,7 @@ async def weddings_create(request: Request):
     fields = {k: _clean_str(body, k, max_len=300) for k in eo_db.WEDDING_FIELDS
               if k not in ("name", "status") and k in body}
     wid = eo_db.create_wedding(name, created_by=user["id"], **fields)
+    audit.log("wedding_created", user=user, target=name, request=request)
     return JSONResponse(eo_db.get_wedding(wid), status_code=201)
 
 
@@ -589,6 +596,7 @@ async def weddings_delete(wedding_id: int, request: Request):
                 status_code=409,
                 detail=f"Campaign '{c['name']}' is still {c['status']}. Cancel it first.")
     eo_db.delete_wedding(wedding_id)
+    audit.log("wedding_deleted", user=user, target=str(wedding_id), request=request)
     _invalidate_call_cache()
     return {"ok": True}
 
@@ -699,6 +707,7 @@ async def agents_create(request: Request):
     aid = eo_db.create_agent(name, prompt, wedding_id=body.get("wedding_id"),
                              created_by=user["id"], **fields)
     _invalidate_call_cache()
+    audit.log("agent_created", user=user, target=name, request=request)
     return JSONResponse(eo_db.get_agent(aid), status_code=201)
 
 
@@ -718,6 +727,8 @@ async def agents_update(agent_id: int, request: Request):
         fields["prompt_template"] = prompt
     eo_db.update_agent(agent_id, **fields)
     _invalidate_call_cache()
+    audit.log("agent_updated", user=user, target=str(agent_id),
+              detail={"fields": sorted(fields)}, request=request)
     return JSONResponse(eo_db.get_agent(agent_id))
 
 
@@ -749,6 +760,7 @@ async def agents_duplicate(agent_id: int, request: Request):
         speech_language_code=src.get("speech_language_code"),
         language_mode=src.get("language_mode"), listen_seconds=src.get("listen_seconds"),
         requires_event=src.get("requires_event"))
+    audit.log("agent_duplicated", user=user, target=name, detail={"from": agent_id, "id": aid}, request=request)
     return JSONResponse(eo_db.get_agent(aid), status_code=201)
 
 
@@ -766,6 +778,7 @@ async def agents_delete(agent_id: int, request: Request):
                 status_code=409,
                 detail=f"Campaign '{c['name']}' is still {c['status']}. Cancel it first.")
     eo_db.delete_agent(agent_id)
+    audit.log("agent_deleted", user=user, target=str(agent_id), request=request)
     _invalidate_call_cache()
     return {"ok": True}
 
@@ -1104,6 +1117,8 @@ async def campaign_create(request: Request):
         agent_id=p["agent"]["id"],
     )
     eo_db.add_campaign_contacts(cid, p["contacts"])
+    audit.log("campaign_created", user=user, target=p["name"],
+              detail={"id": cid, "guests": len(p["contacts"]), "status": status}, request=request)
     return JSONResponse(eo_db.get_campaign_full(cid), status_code=201)
 
 
@@ -1115,6 +1130,7 @@ async def campaign_cancel(campaign_id: int, request: Request):
     ok = eo_db.cancel_campaign(campaign_id)
     if not ok:
         raise HTTPException(status_code=400, detail="Campaign is not cancellable (already completed or cancelled)")
+    audit.log("campaign_cancelled", user=user, target=str(campaign_id), request=request)
     return {"ok": True}
 
 
@@ -1491,8 +1507,8 @@ async def eo_scheduler_toggle(request: Request):
 # sees every page. The routes stay wired either way — this is menu curation, not security.
 # Anything that must be truly unreachable gets a role guard on its endpoint as well.
 UI_PAGES = ("weddings", "campaigns", "contacts", "scheduler", "agents", "call-logs",
-            "users", "settings", "subscription")
-_DEFAULT_HIDDEN_PAGES = "agents"
+            "users", "settings", "audit", "subscription")
+_DEFAULT_HIDDEN_PAGES = "agents,audit"
 
 
 def client_hidden_pages() -> tuple:
@@ -1508,6 +1524,15 @@ def client_hidden_pages() -> tuple:
     return [p for p in UI_PAGES if p in wanted], "env"
 
 
+def ui_config(user=None) -> dict:
+    """Menu config sent with /login and /me. The super admin sees every tab (hidden_pages
+    empty) and is told which ones the client cannot see, so the sidebar can tag them."""
+    hidden, _source = client_hidden_pages()
+    superadmin = eo_auth.is_superadmin(user)
+    return {"hidden_pages": [] if superadmin else hidden, "client_hidden_pages": hidden,
+            "superadmin": superadmin}
+
+
 async def _json_body(request: Request) -> dict:
     try:
         return await request.json() if await request.body() else {}
@@ -1520,18 +1545,6 @@ def _superadmin_state() -> dict:
     return {"pages": list(UI_PAGES), "client_hidden_pages": hidden, "source": source,
             "counts": data_reset.counts(), "live_calls": live.count(),
             "backup_root": data_reset.backup_root()}
-
-
-@router.get("/ui-pages")
-async def ui_pages(request: Request):
-    """Which tabs THIS user should see. Any signed-in user may ask; the super admin is
-    never hidden from anything. Menu curation only — every sensitive endpoint keeps its
-    own role guard, so hiding a tab is not what makes it safe."""
-    user = eo_auth.require_eo(request)
-    hidden, source = client_hidden_pages()
-    if eo_auth.is_superadmin(user):
-        hidden = []
-    return JSONResponse({"pages": list(UI_PAGES), "hidden_pages": hidden, "source": source})
 
 
 @router.get("/superadmin")
@@ -1605,3 +1618,23 @@ async def subscription_put(request: Request):
         eo_db.set_setting(subscription.SETTING_KEY, clean, updated_by=user["username"])
         audit.log("subscription_updated", user=user, detail=clean, request=request)
     return JSONResponse(subscription.snapshot(user))
+
+
+# ---------------------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------------------
+@router.get("/audit")
+async def audit_list(request: Request):
+    eo_auth.require_eo_admin(request)
+    qp = request.query_params
+    return JSONResponse(eo_db.list_audit(
+        q=qp.get("q") or None, action=qp.get("action") or None,
+        user_id=qp.get("user_id") or None, date_from=qp.get("from") or None,
+        date_to=qp.get("to") or None, limit=int(qp.get("limit") or 100),
+        offset=int(qp.get("offset") or 0)))
+
+
+@router.get("/audit/actions")
+async def audit_actions(request: Request):
+    eo_auth.require_eo_admin(request)
+    return JSONResponse({"items": eo_db.audit_actions()})

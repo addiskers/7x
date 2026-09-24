@@ -199,3 +199,43 @@ def test_reading_the_plan_is_open_to_any_signed_in_user():
     import inspect
     src = inspect.getsource(eo_api.subscription_get)
     assert "require_eo(request)" in src
+
+
+# ------------------------------------------------------ the client's menu, EPP-style
+def test_the_super_admin_sees_every_tab_but_is_told_which_the_client_cannot(monkeypatch):
+    """The sidebar tags hidden tabs for the service provider instead of hiding them from
+    them; everyone else simply does not get those tabs."""
+    monkeypatch.setenv("EO_SUPERADMIN_USERS", "boss")
+    monkeypatch.setenv("EO_HIDDEN_PAGES", "agents,audit")
+    monkeypatch.setattr(eo_api.eo_db, "get_setting", lambda *a, **k: None)
+    boss = eo_api.ui_config({"role": "eo_admin", "username": "boss"})
+    assert boss["superadmin"] is True and boss["hidden_pages"] == []
+    assert boss["client_hidden_pages"] == ["agents", "audit"]
+    client = eo_api.ui_config({"role": "eo_admin", "username": "client"})
+    assert client["superadmin"] is False and client["hidden_pages"] == ["agents", "audit"]
+
+
+def test_every_sidebar_page_key_is_one_the_server_knows():
+    """A tab whose key is not in UI_PAGES could never be hidden, and a key with no tab
+    would be a toggle that does nothing — the mismatch the first port shipped with."""
+    import re
+    layout = open("admin/src/components/Layout.jsx", encoding="utf-8").read()
+    nav_pages = set(re.findall(r"page: '([a-z-]+)'", layout))
+    assert nav_pages == set(eo_api.UI_PAGES)
+
+
+@pytest.mark.parametrize("fn_name", ["audit_list", "audit_actions"])
+def test_the_audit_log_needs_an_admin_login(fn_name):
+    import inspect
+    assert "require_eo_admin(request)" in inspect.getsource(getattr(eo_api, fn_name))
+
+
+def test_the_audit_log_filters_by_action_and_text(fresh_eo_db):
+    db = fresh_eo_db
+    db.init()
+    db.add_audit(username="boss", action="wedding_created", target="Ved & Riya")
+    db.add_audit(username="boss", action="login")
+    db.add_audit(username="client", action="login_failed", target="client")
+    assert db.list_audit(action="login")["total"] == 1
+    assert db.list_audit(q="Ved")["total"] == 1
+    assert db.audit_actions() == ["login", "login_failed", "wedding_created"]

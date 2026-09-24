@@ -402,3 +402,15 @@ def test_the_logistics_agent_can_answer_about_the_guests_stay():
 def test_the_reminder_agent_listens_long_enough_to_hear_a_question():
     """At 6s it hung up while guests were still asking."""
     assert _shipped()["event_reminder"]["listen_seconds"] >= 12
+
+
+def test_every_agent_treats_listening_sounds_as_go_on():
+    """"if I just say 'okay' or 'barobar' ... it says 'thank you' and cuts the call" and "when I ask
+    more questions, it just says 'thank you' and hangs up". The model read a backchannel as the end."""
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
+        assert "LISTENING SOUNDS ARE NOT GOODBYES" in t, slug
+        assert "barobar" in t, slug
+        assert "Is there anything else I can help you with?" in t, slug
+        assert "Never answer a question with a goodbye" in t, slug
+        assert "record_outcome belongs to that final turn only" in t, slug

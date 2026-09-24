@@ -87,7 +87,7 @@ export default function Weddings() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))' }}>
+      <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill,minmax(min(320px,100%),1fr))' }}>
         {weddings.map((w) => (
           <div key={w.id} className="panel" style={{
             padding: 18, cursor: 'pointer',

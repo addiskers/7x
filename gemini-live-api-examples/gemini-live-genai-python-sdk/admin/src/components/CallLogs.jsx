@@ -283,7 +283,7 @@ export function CallDrawer({ call, onClose }) {
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <div className="sub">{fmtDate(call.started_at)} · {call.source} · {fmtDur(call.duration_seconds)}</div>
-        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 14 }}>
+        <div className="grid detail-grid" style={{ marginBottom: 14 }}>
           <div><label>Status</label><StatusPill call={call} /></div>
           <div><label>RSVP</label><RsvpEditor key={call.id || call.call_sid} call={call} /></div>
           <div><label>Kids (12+)</label>{fmtKids(call) || <span className="muted">—</span>}</div>
@@ -302,7 +302,7 @@ export function CallDrawer({ call, onClose }) {
         {call.callback && (
           <div className="card" style={{ marginBottom: 14, padding: 12 }}>
             <label>Callback</label>
-            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="grid detail-grid">
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Scheduled for</span><div>{fmtDate(call.callback.due_at)}</div></div>
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Status</span><div><span className={`pill ${call.callback.status || 'pending'}`}>{call.callback.status || 'pending'}</span></div></div>
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Attempts</span><div>{call.callback.attempts ?? 0}{call.callback.max_attempts ? ` / ${call.callback.max_attempts}` : ''}</div></div>
@@ -317,7 +317,7 @@ export function CallDrawer({ call, onClose }) {
         {hasCost && (
           <div className="card" style={{ marginBottom: 14, padding: 12 }}>
             <label>Cost (admin only)</label>
-            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div className="grid detail-grid" style={{ '--cols': 3 }}>
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Total</span><div style={{ fontFamily: 'var(--mono)' }}>{fmtCost(call.total_cost_usd)}</div></div>
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Gemini</span><div style={{ fontFamily: 'var(--mono)' }}>{fmtCost(call.gemini_cost_usd)}</div></div>
               <div><span className="muted" style={{ fontSize: '0.7rem' }}>Tokens</span><div style={{ fontFamily: 'var(--mono)' }}>{call.tokens?.total ?? '—'}</div></div>

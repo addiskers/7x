@@ -1400,11 +1400,34 @@ def add_audit(user_id=None, username="", action="", target="", detail="", ip="")
         (user_id, username or "", action or "", target or "", detail or "", ip or "", _now()))
 
 
-def list_audit(limit=100, offset=0) -> dict:
-    total = _one("SELECT COUNT(*) c FROM audit_log")["c"]
-    rows = _rows("SELECT * FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                 (int(limit), int(offset)))
+def list_audit(q=None, action=None, user_id=None, date_from=None, date_to=None,
+               limit=100, offset=0) -> dict:
+    where, params = [], []
+    if q:
+        like = f"%{q}%"
+        where.append("(username LIKE ? OR action LIKE ? OR target LIKE ? OR detail LIKE ?)")
+        params += [like] * 4
+    if action:
+        where.append("action = ?")
+        params.append(str(action))
+    if user_id not in (None, ""):
+        where.append("user_id = ?")
+        params.append(int(user_id))
+    if date_from:
+        where.append("substr(created_at,1,10) >= ?")
+        params.append(str(date_from)[:10])
+    if date_to:
+        where.append("substr(created_at,1,10) <= ?")
+        params.append(str(date_to)[:10])
+    wsql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = _one(f"SELECT COUNT(*) c FROM audit_log {wsql}", tuple(params))["c"]
+    rows = _rows(f"SELECT * FROM audit_log {wsql} ORDER BY id DESC LIMIT ? OFFSET ?",
+                 tuple(params) + (int(limit), int(offset)))
     return {"items": rows, "total": int(total)}
+
+
+def audit_actions() -> list:
+    return [r["action"] for r in _rows("SELECT DISTINCT action FROM audit_log ORDER BY action")]
 
 
 def data_counts() -> dict:

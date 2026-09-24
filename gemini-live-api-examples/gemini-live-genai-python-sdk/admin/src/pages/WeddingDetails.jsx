@@ -97,6 +97,7 @@ export default function WeddingDetails() {
       {dates.map((d) => (
         <div className="panel" key={d || 'undated'}>
           <div className="panel-head"><h3>{prettyDate(d)}</h3></div>
+          <div className="table-scroll">
           <table className="grid">
             <thead>
               <tr><th>Function</th><th>Time</th><th>Venue</th><th>Who</th><th style={{ width: 150 }}></th></tr>
@@ -120,6 +121,7 @@ export default function WeddingDetails() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       ))}
 

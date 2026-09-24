@@ -1,17 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { useAuth } from '../auth.jsx'
+import { ADMIN_NAV } from '../components/Layout.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 
 // The service provider's page (EO_SUPERADMIN_USERS only): which tabs the client's admins
 // see, and clearing the test data before go-live.
 const num = (n) => new Intl.NumberFormat('en-IN').format(Number(n || 0))
-
-// Labels for the page keys the server sends back in `pages`.
-const PAGE_LABEL = {
-  weddings: 'Weddings', campaigns: 'Campaigns', contacts: 'Contacts', scheduler: 'Scheduler',
-  agents: 'Agents', 'call-logs': 'Call logs', users: 'Users', settings: 'Settings',
-  subscription: 'Subscription',
-}
 
 const PARTS = [
   { key: 'calls', label: 'Call logs and recordings',
@@ -25,6 +20,7 @@ const PARTS = [
 ]
 
 export default function SuperAdmin() {
+  const { refresh } = useAuth()
   const [d, setD] = useState(null)
   const [err, setErr] = useState('')
 
@@ -38,13 +34,15 @@ export default function SuperAdmin() {
     <div className="stack">
       <PageHeader title="Super admin" sub="Only the service provider's accounts see this page. What you set here applies to every admin the client has." />
       {err && <div className="err">{err}</div>}
-      <TabsPanel d={d} onSaved={(x) => setD(x)} />
+      <TabsPanel d={d} onSaved={(x) => { setD(x); refresh() }} />
       <ResetPanel d={d} onDone={(x) => setD(x)} />
     </div>
   )
 }
 
 function TabsPanel({ d, onSaved }) {
+  // Only tabs the server knows as page keys can be toggled; the sidebar supplies the labels.
+  const pages = ADMIN_NAV.filter((n) => n.page && !n.superOnly && d.pages.includes(n.page))
   const baseKey = d.client_hidden_pages.join(',')
   const [hidden, setHidden] = useState(new Set(d.client_hidden_pages))
   const [busy, setBusy] = useState(false)
@@ -53,7 +51,7 @@ function TabsPanel({ d, onSaved }) {
   useEffect(() => { setHidden(new Set(d.client_hidden_pages)) }, [baseKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const base = new Set(d.client_hidden_pages)
-  const dirty = d.pages.some((p) => hidden.has(p) !== base.has(p))
+  const dirty = pages.some((p) => hidden.has(p.page) !== base.has(p.page))
   const toggle = (page, visible) => setHidden((s) => { const n = new Set(s); if (visible) n.delete(page); else n.add(page); return n })
 
   async function save(body) {
@@ -69,8 +67,7 @@ function TabsPanel({ d, onSaved }) {
       <div className="panel-head">
         <div><h3>Tabs the client sees</h3>
           <div className="muted" style={{ fontSize: '0.78rem', marginTop: 3 }}>
-            Ticked tabs appear in the menu of the client's admins. You always see every tab.
-            This curates the menu — anything that must be truly unreachable is blocked on the server as well.
+            Ticked tabs appear in the menu of the client's admins. You always see every tab; hidden ones carry a "hidden" tag in your menu.
           </div></div>
         {saved && <span className="pill green">Saved ✓</span>}
       </div>
@@ -79,11 +76,14 @@ function TabsPanel({ d, onSaved }) {
           <thead><tr><th className="no-sort" style={{ width: 70 }}>Visible</th><th className="no-sort">Tab</th><th className="no-sort">Note</th></tr></thead>
           <tbody>
             <tr><td><input type="checkbox" checked disabled /></td><td>Dashboard</td><td className="muted" style={{ fontSize: '0.78rem' }}>Always shown</td></tr>
-            {d.pages.map((p) => (
-              <tr key={p} style={{ opacity: hidden.has(p) ? 0.6 : 1 }}>
-                <td><input type="checkbox" checked={!hidden.has(p)} onChange={(e) => toggle(p, e.target.checked)} /></td>
-                <td>{PAGE_LABEL[p] || p}</td>
-                <td className="muted" style={{ fontSize: '0.78rem' }}>{hidden.has(p) ? 'Hidden from the client' : ''}</td>
+            {pages.map((p) => (
+              <tr key={p.page} style={{ opacity: hidden.has(p.page) ? 0.6 : 1 }}>
+                <td><input type="checkbox" checked={!hidden.has(p.page)} onChange={(e) => toggle(p.page, e.target.checked)} /></td>
+                <td>{p.label}</td>
+                <td className="muted" style={{ fontSize: '0.78rem' }}>
+                  {hidden.has(p.page) ? 'Hidden from the client' : ''}
+                  {p.adminOnly && !hidden.has(p.page) ? 'Shown to admin logins only' : ''}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -138,7 +138,7 @@ function ResetPanel({ d, onDone }) {
         ))}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
-        <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="Type DELETE" style={{ width: 160 }} />
+        <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="Type DELETE" style={{ width: 160, maxWidth: '100%' }} />
         <button className="btn danger" disabled={!can} onClick={run}>{busy ? 'Deleting…' : 'Delete selected data'}</button>
         {!!d.live_calls && <span style={{ color: 'var(--amber)', fontSize: '0.8rem' }}>A call is on the line. Wait until it ends.</span>}
       </div>
