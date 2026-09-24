@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
-import { useAuth } from '../auth.jsx'
-import CallLogs, { fmtDate, fmtCost } from '../components/CallLogs.jsx'
+import CallLogs, { fmtDate } from '../components/CallLogs.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 
 export default function Dashboard() {
-  const { isAdmin } = useAuth()
   const [s, setS] = useState(null)
   const [active, setActive] = useState(null)
   const [err, setErr] = useState('')
@@ -50,7 +48,7 @@ export default function Dashboard() {
         <div className="card stat">
           <div className="label">Total Calls</div>
           <div className="value">{s ? s.total_calls : '—'}</div>
-          <div className="sub">Plivo {bySource.plivo || bySource.twilio || 0} · Inbound {bySource.plivo_inbound || 0} · Browser {bySource.browser || 0}</div>
+          <div className="sub">Inbound {bySource.plivo_inbound || 0} · Browser {bySource.browser || 0}</div>
         </div>
         <div className="card stat">
           <div className="label">Total Minutes</div>
@@ -63,26 +61,6 @@ export default function Dashboard() {
           <div className="sub">{s ? `${(s.unique_yes ?? s.bookings) || 0} coming · ${s.unique_kids || 0} kids confirmed (Cumulative across all campaigns till date)` : ''}</div>
         </div>
       </div>
-
-      {isAdmin && s && (
-        <div className="grid stat-grid">
-          <div className="card stat">
-            <div className="label">Total Cost</div>
-            <div className="value" style={{ color: 'var(--green)' }}>{fmtCost(s.total_cost_usd)}</div>
-            <div className="sub">Gemini {fmtCost(s.gemini_cost_usd)}</div>
-          </div>
-          <div className="card stat">
-            <div className="label">Avg / Call</div>
-            <div className="value">{fmtCost(s.avg_cost_per_call)}</div>
-            <div className="sub">across {s.total_calls || 0} calls</div>
-          </div>
-          <div className="card stat">
-            <div className="label">This Month</div>
-            <div className="value">{fmtCost(s.this_month?.cost_usd)}</div>
-            <div className="sub">projected {fmtCost(s.projected_month_cost)}</div>
-          </div>
-        </div>
-      )}
 
       <CallLogs title="Call Logs" showSource={false} />
     </div>

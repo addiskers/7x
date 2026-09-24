@@ -660,7 +660,7 @@ def _event_fields(body):
 # ---------------------------------------------------------------------------------------
 @router.get("/agents")
 async def agents_list(request: Request):
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     wedding_id = request.query_params.get("wedding_id") or None
     if wedding_id:
         _wedding_or_404(user, wedding_id)
@@ -671,13 +671,13 @@ async def agents_list(request: Request):
 
 @router.get("/agents/{agent_id}")
 async def agents_detail(agent_id: int, request: Request):
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     return JSONResponse(_agent_or_404(user, agent_id))
 
 
 @router.post("/agents")
 async def agents_create(request: Request):
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     body = await request.json()
     if body.get("wedding_id"):
         _wedding_or_404(user, body["wedding_id"])
@@ -694,7 +694,7 @@ async def agents_create(request: Request):
 
 @router.patch("/agents/{agent_id}")
 async def agents_update(agent_id: int, request: Request):
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     agent = _agent_or_404(user, agent_id)
     body = await request.json()
     fields = _agent_fields(body, agent)
@@ -715,7 +715,7 @@ async def agents_update(agent_id: int, request: Request):
 async def agents_duplicate(agent_id: int, request: Request):
     """Copy an agent — the way a wedding customises a shipped template without editing
     the global row every other wedding uses."""
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     src = _agent_or_404(user, agent_id)
     body = await request.json() if await request.body() else {}
     wedding_id = body.get("wedding_id") or src.get("wedding_id")
@@ -723,8 +723,14 @@ async def agents_duplicate(agent_id: int, request: Request):
         _wedding_or_404(user, wedding_id)
     name = _clean_str(body, "name", max_len=120) or f"{src['name']} (copy)"
     slug = _clean_str(body, "slug", max_len=60) or src.get("slug") or ""
-    if slug and eo_db.get_agent_by_slug(slug, wedding_id=wedding_id) and not wedding_id:
-        slug = ""            # don't collide with the global template's unique (NULL, slug)
+    # agents carry UNIQUE(wedding_id, slug). Duplicating into a wedding that already has a
+    # copy of this template collides, and the IntegrityError surfaced as a bare 500 in the
+    # UI. Find a free suffix instead; fall back to no slug, which is always allowed.
+    if slug and eo_db.get_agent_by_slug(slug, wedding_id=wedding_id):
+        base = slug[:54]
+        slug = next((c for n in range(2, 100)
+                     if not eo_db.get_agent_by_slug((c := f"{base}-{n}"), wedding_id=wedding_id)),
+                    "")
     aid = eo_db.create_agent(
         name, src["prompt_template"], wedding_id=wedding_id, created_by=user["id"],
         slug=slug, kind=src.get("kind"), description=src.get("description"),
@@ -738,7 +744,7 @@ async def agents_duplicate(agent_id: int, request: Request):
 
 @router.delete("/agents/{agent_id}")
 async def agents_delete(agent_id: int, request: Request):
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     agent = _agent_or_404(user, agent_id)
     if agent.get("wedding_id") is None:
         raise HTTPException(status_code=400,
@@ -836,7 +842,7 @@ def _json_list(value, label):
 async def agents_preview(agent_id: int, request: Request):
     """Render this agent against a chosen event + guest and return the exact text the
     model would be given — the main way an operator spots 'this event has no venue'."""
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     agent = _agent_or_404(user, agent_id)
     body = await request.json() if await request.body() else {}
 
@@ -872,7 +878,7 @@ async def agents_test_token(agent_id: int, request: Request):
     /ws is unauthenticated, so it must never take an agent id straight from the query
     string — anyone could then render any wedding's prompt and hear its guests' phone
     numbers and hotel rooms. The token names exactly one agent/event/guest and expires."""
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     agent = _agent_or_404(user, agent_id)
     body = await request.json() if await request.body() else {}
     event = _event_or_404(user, body["event_id"]) if body.get("event_id") else None
@@ -893,7 +899,7 @@ async def agents_test_token(agent_id: int, request: Request):
 @router.post("/agents/{agent_id}/test-call")
 async def agents_test_call(agent_id: int, request: Request):
     """Ring a number and let this agent speak — the phone half of the Test panel."""
-    user = eo_auth.require_eo(request)
+    user = eo_auth.require_eo_admin(request)
     agent = _agent_or_404(user, agent_id)
     body = await request.json()
     # normalize_phone returns (e164, is_valid) — a bare tuple is truthy, so unpack it.

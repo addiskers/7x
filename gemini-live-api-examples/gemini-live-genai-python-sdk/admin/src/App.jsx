@@ -44,8 +44,10 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/weddings" element={<Weddings />} />
         <Route path="/weddings/:id" element={<WeddingDetails />} />
-        <Route path="/agents" element={<Agents />} />
-        <Route path="/agents/:id" element={<AgentEditor />} />
+        {/* Agent prompts are ours, not the client's — hiding the nav item is not enough,
+            a typed URL would still open them. */}
+        <Route path="/agents" element={<Protected adminOnly><Agents /></Protected>} />
+        <Route path="/agents/:id" element={<Protected adminOnly><AgentEditor /></Protected>} />
         <Route path="/create-campaign" element={<CreateCampaign />} />
         <Route path="/campaigns" element={<MyCampaigns />} />
         <Route path="/campaigns/:id" element={<CampaignDetails />} />

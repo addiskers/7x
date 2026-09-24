@@ -1133,6 +1133,20 @@ class PlivoMediaBridge:
                         continue
                     if (self._silence_wrapup_at
                             and now - self._silence_wrapup_at >= 8.0):
+                        # A guest speaking a language we transcribe badly looks exactly like
+                        # a dead line: Gemini returns little or no text, so the ladder climbs
+                        # while they are in fact still talking. VAD is language-blind, so
+                        # trust it over the transcript and stay on the line.
+                        if now - self._last_caller_audio < 8.0:
+                            logger.info("Wrap-up pending but the caller is still voicing; "
+                                        "cancelling the hangup and asking the agent to re-engage")
+                            self._silence_nudged = False
+                            self._silence_wrapup_at = 0.0
+                            await self.text_input_queue.put(
+                                "[The member IS speaking but you may not have understood them. Do NOT "
+                                "end the call. Say ONE short line in simple words asking them to repeat, "
+                                "and if they seem to be using another language, switch to it.]")
+                            continue
                         logger.info("Wrap-up nudge got no end_call; scheduling hangup")
                         self._schedule_end(mute=False)
                         continue

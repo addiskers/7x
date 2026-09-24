@@ -39,6 +39,34 @@ FALLBACK_SYSTEM_INSTRUCTION = (
 )
 
 
+_DEFAULT_TRANSCRIBE_HINTS = "en-IN,hi-IN,gu-IN,mr-IN,pa-IN,bn-IN,ta-IN,te-IN,kn-IN,ml-IN"
+
+
+def _input_transcription_config():
+    """Transcribe the CALLER in whatever language they actually speak.
+
+    The session's speech_config.language_code sets the agent's speaking voice and is fixed
+    for the whole call. Left to govern input as well, a guest answering in Hindi came back
+    as garbled English: the agent could not respond, and the idle ladder read that as a
+    dead line and hung up on them — exactly the reported bug.
+
+    language_auto detects per utterance; the hints bias it to the languages this platform
+    serves. Both fields are newer than the minimum SDK we pin, so an older google-genai
+    falls back to plain transcription rather than failing every call."""
+    hints = [h.strip() for h in
+             (os.getenv("EO_TRANSCRIBE_LANGUAGE_HINTS", _DEFAULT_TRANSCRIBE_HINTS) or "").split(",")
+             if h.strip()]
+    try:
+        return types.AudioTranscriptionConfig(
+            language_auto=types.LanguageAuto(),
+            language_hints=types.LanguageHints(language_codes=hints) if hints else None,
+        )
+    except Exception as e:                  # older SDK: fields absent / different shape
+        logger.warning(f"Live API transcription language hints unsupported ({e}); "
+                       f"falling back to default transcription")
+        return types.AudioTranscriptionConfig()
+
+
 class _PreopenedSession:
     """A Live session whose connect handshake already happened (see GeminiLive.open_connection).
     Quacks like the async context manager start_session expects: __aenter__ hands back the
@@ -136,7 +164,13 @@ class GeminiLive:
                 )
             ),
             system_instruction=types.Content(parts=[types.Part(text=self.system_instruction)]),
-            input_audio_transcription=types.AudioTranscriptionConfig(),
+            # INPUT transcription must not inherit the output voice's language_code. With
+            # it pinned to en-IN, a guest answering in Hindi was transcribed as garbled
+            # English, so the agent could not respond and the silence ladder hung up on
+            # them. language_auto detects per utterance; the hints bias it to the languages
+            # this platform actually serves. The OUTPUT voice stays fixed — the Live API
+            # cannot change speaking language mid-session.
+            input_audio_transcription=_input_transcription_config(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(

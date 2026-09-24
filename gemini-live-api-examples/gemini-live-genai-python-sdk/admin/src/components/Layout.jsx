@@ -2,27 +2,29 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { useWedding } from '../wedding.jsx'
 import {
-  IconDashboard, IconPlus, IconCampaigns, IconClock, IconUsers, IconSettings, IconUser,
+  IconDashboard, IconCampaigns, IconClock, IconUsers, IconSettings, IconUser,
   IconLogout, IconRings, IconAgent,
 } from './icons.jsx'
 
-// Call Logs lives on the Dashboard; guests live inside Create Campaign.
+// Call Logs lives on the Dashboard; guests live inside Create Campaign, which is itself
+// reached from Campaigns ("New campaign") rather than having its own sidebar entry.
+//
+// Superadmin (role eo_admin) sees everything. Admin (role eo_agent) is the CLIENT-facing
+// role: no Agents — the prompts are ours, not theirs to read or edit — and no Users or
+// Settings. Note the UI labels invert the code names: eo_admin renders as "Superadmin".
 const FULL_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/weddings', label: 'Weddings', icon: IconRings },
   { to: '/agents', label: 'Agents', icon: IconAgent },
-  { to: '/create-campaign', label: 'Create Campaign', icon: IconPlus },
   { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
   { to: '/scheduler', label: 'Scheduler', icon: IconClock },
-  { to: '/users', label: 'Users', icon: IconUsers, adminOnly: true },
-  { to: '/settings', label: 'Settings', icon: IconSettings, adminOnly: true },
+  { to: '/users', label: 'Users', icon: IconUsers },
+  { to: '/settings', label: 'Settings', icon: IconSettings },
 ]
 
 const AGENT_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/weddings', label: 'Weddings', icon: IconRings },
-  { to: '/agents', label: 'Agents', icon: IconAgent },
-  { to: '/create-campaign', label: 'Create Campaign', icon: IconPlus },
   { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
   { to: '/scheduler', label: 'Scheduler', icon: IconClock },
   { to: '/profile', label: 'My Profile', icon: IconUser },
