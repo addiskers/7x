@@ -28,6 +28,12 @@ export const ADMIN_NAV = [
   { to: '/profile', label: 'My Profile', icon: IconUser, agentOnly: true },
 ]
 
+function initials(name, username) {
+  const s = (name || username || '7x').trim()
+  const parts = s.split(/\s+/)
+  return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase() || '7X'
+}
+
 export default function Layout() {
   const { user, isAdmin, isSuperadmin, logout } = useAuth()
   const { weddings, weddingId, setWeddingId } = useWedding()
