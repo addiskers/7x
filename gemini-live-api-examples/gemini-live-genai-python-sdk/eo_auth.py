@@ -161,3 +161,34 @@ def require_eo_admin(request: Request) -> dict:
     if user.get("role") != "eo_admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return user
+
+
+# ---------------------------------------------------------------------------------------
+# Service-provider accounts, above eo_admin.
+#
+# eo_admin is a DB role and a client may legitimately be given one. Wiping the database and
+# changing the billing plan must NOT come with it, so those sit behind an env allow-list
+# that no login screen can grant. Blank = nobody, which is the safe default: a fresh install
+# cannot wipe itself until someone deliberately names an account in the environment.
+#
+# Naming note: the ADMIN UI calls eo_admin "Superadmin" and eo_agent "Admin". These helpers
+# mean the provider's own accounts — a third, higher tier than either label.
+# ---------------------------------------------------------------------------------------
+def superadmin_usernames() -> set:
+    raw = os.getenv("EO_SUPERADMIN_USERS") or ""
+    return {u.strip().lower() for u in raw.split(",") if u.strip()}
+
+
+def is_superadmin(user: dict) -> bool:
+    if not user or user.get("role") != "eo_admin":
+        return False
+    return str(user.get("username") or "").lower() in superadmin_usernames()
+
+
+def require_superadmin(request: Request) -> dict:
+    user = require_eo_admin(request)
+    if not is_superadmin(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the service provider's accounts (EO_SUPERADMIN_USERS) can do this")
+    return user

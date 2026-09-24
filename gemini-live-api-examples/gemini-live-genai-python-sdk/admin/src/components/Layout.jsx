@@ -1,46 +1,55 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { useWedding } from '../wedding.jsx'
 import {
   IconDashboard, IconCampaigns, IconClock, IconUsers, IconSettings, IconUser,
-  IconLogout, IconRings, IconAgent,
+  IconLogout, IconRings, IconAgent, IconLogs,
 } from './icons.jsx'
 
 // Call Logs lives on the Dashboard; guests live inside Create Campaign, which is itself
 // reached from Campaigns ("New campaign") rather than having its own sidebar entry.
 //
-// Superadmin (role eo_admin) sees everything. Admin (role eo_agent) is the CLIENT-facing
-// role: no Agents — the prompts are ours, not theirs to read or edit — and no Users or
-// Settings. Note the UI labels invert the code names: eo_admin renders as "Superadmin".
-const FULL_NAV = [
+// `page` is the key the server uses in UI_PAGES / hidden_pages, so the super admin's
+// show-hide toggles drive this menu. Entries without a `page` can never be hidden.
+// Superadmin (role eo_admin) sees everything; Admin (eo_agent) is the CLIENT-facing role.
+// Note the UI labels invert the code names: eo_admin renders as "Superadmin".
+export const ADMIN_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
-  { to: '/weddings', label: 'Weddings', icon: IconRings },
-  { to: '/agents', label: 'Agents', icon: IconAgent },
-  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
-  { to: '/scheduler', label: 'Scheduler', icon: IconClock },
-  { to: '/users', label: 'Users', icon: IconUsers },
-  { to: '/settings', label: 'Settings', icon: IconSettings },
+  { to: '/weddings', label: 'Weddings', icon: IconRings, page: 'weddings' },
+  { to: '/agents', label: 'Agents', icon: IconAgent, page: 'agents', adminOnly: true },
+  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns, page: 'campaigns' },
+  { to: '/scheduler', label: 'Scheduler', icon: IconClock, page: 'scheduler' },
+  { to: '/subscription', label: 'Subscription', icon: IconLogs, page: 'subscription' },
+  { to: '/users', label: 'Users', icon: IconUsers, page: 'users', adminOnly: true },
+  { to: '/settings', label: 'Settings', icon: IconSettings, page: 'settings', adminOnly: true },
+  { to: '/superadmin', label: 'Super admin', icon: IconSettings, superOnly: true },
+  { to: '/profile', label: 'My Profile', icon: IconUser, agentOnly: true },
 ]
-
-const AGENT_NAV = [
-  { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
-  { to: '/weddings', label: 'Weddings', icon: IconRings },
-  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
-  { to: '/scheduler', label: 'Scheduler', icon: IconClock },
-  { to: '/profile', label: 'My Profile', icon: IconUser },
-]
-
-function initials(name, username) {
-  const s = (name || username || '7x').trim()
-  const parts = s.split(/\s+/)
-  return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase() || '7X'
-}
 
 export default function Layout() {
-  const { user, isAdmin, logout } = useAuth()
+  const { user, isAdmin, isSuperadmin, logout } = useAuth()
   const { weddings, weddingId, setWeddingId } = useWedding()
   const navigate = useNavigate()
-  const nav = isAdmin ? FULL_NAV : AGENT_NAV
+  const [hidden, setHidden] = useState([])
+
+  // Which tabs the client may see. The super admin sets this; until it loads we show
+  // nothing extra rather than flashing a tab the client is not meant to have.
+  useEffect(() => {
+    if (isSuperadmin) { setHidden([]); return }
+    let alive = true
+    api.get('/ui-pages').then((r) => { if (alive) setHidden(r.hidden_pages || []) }).catch(() => {})
+    return () => { alive = false }
+  }, [isSuperadmin])
+
+  const nav = ADMIN_NAV.filter((n) => {
+    if (n.superOnly) return isSuperadmin
+    if (n.adminOnly) return isAdmin
+    if (n.agentOnly) return !isAdmin
+    if (n.page && !isSuperadmin && hidden.includes(n.page)) return false
+    return true
+  })
 
   function doLogout() {
     logout()

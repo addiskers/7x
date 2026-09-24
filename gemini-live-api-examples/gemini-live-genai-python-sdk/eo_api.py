@@ -16,13 +16,17 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 
 import agent_tools
+import audit
 import callbacks
+import data_reset
 import eo_auth
 import eo_db
 import eo_import
+import live
 import prompt_render
 import scheduler
 import store
+import subscription
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/eo")
@@ -309,8 +313,7 @@ async def login(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = eo_auth.issue_token(user)
-    return {"ok": True, "token": token,
-            "user": {"id": user["id"], "username": user["username"], "name": user.get("name"), "role": user["role"]}}
+    return {"ok": True, "token": token, "user": _me(user)}
 
 
 @router.post("/logout")
@@ -318,10 +321,17 @@ async def logout(request: Request):
     return {"ok": True}
 
 
+def _me(user) -> dict:
+    """What the SPA is told about the signed-in user. is_superadmin drives the Super admin
+    menu entry; every endpoint behind it re-checks server-side."""
+    return {"id": user["id"], "username": user["username"], "name": user.get("name"),
+            "role": user["role"], "is_superadmin": eo_auth.is_superadmin(user)}
+
+
 @router.get("/me")
 async def me(request: Request):
     user = eo_auth.require_eo(request)
-    return {"ok": True, "user": {"id": user["id"], "username": user["username"], "name": user.get("name"), "role": user["role"]}}
+    return {"ok": True, "user": _me(user)}
 
 
 @router.post("/me/password")
@@ -1468,3 +1478,130 @@ async def eo_scheduler_toggle(request: Request):
     enabled = bool(body.get("enabled", not scheduler.is_enabled()))
     scheduler.set_override(enabled)
     return {"ok": True, "enabled": enabled}
+
+
+# ---------------------------------------------------------------------------------------
+# Super admin (the service provider): the client's menu, the plan, and clearing test data
+#
+# These sit behind EO_SUPERADMIN_USERS, NOT the eo_admin role: a client may be given an
+# admin login, and wiping the database must never come with it.
+# ---------------------------------------------------------------------------------------
+# Pages that can be taken off the client's menu. The super admin picks them (stored in
+# settings["hidden_pages"]); until then EO_HIDDEN_PAGES decides. The super admin always
+# sees every page. The routes stay wired either way — this is menu curation, not security.
+# Anything that must be truly unreachable gets a role guard on its endpoint as well.
+UI_PAGES = ("weddings", "campaigns", "contacts", "scheduler", "agents", "call-logs",
+            "users", "settings", "subscription")
+_DEFAULT_HIDDEN_PAGES = "agents"
+
+
+def client_hidden_pages() -> tuple:
+    """(hidden page keys for the client's admins, 'db' | 'env')."""
+    try:
+        stored = eo_db.get_setting("hidden_pages")
+    except Exception:
+        stored = None
+    if isinstance(stored, list):
+        return [p for p in UI_PAGES if p in {str(x).strip().lower() for x in stored}], "db"
+    raw = os.getenv("EO_HIDDEN_PAGES", _DEFAULT_HIDDEN_PAGES) or ""
+    wanted = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return [p for p in UI_PAGES if p in wanted], "env"
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        return await request.json() if await request.body() else {}
+    except Exception:
+        return {}
+
+
+def _superadmin_state() -> dict:
+    hidden, source = client_hidden_pages()
+    return {"pages": list(UI_PAGES), "client_hidden_pages": hidden, "source": source,
+            "counts": data_reset.counts(), "live_calls": live.count(),
+            "backup_root": data_reset.backup_root()}
+
+
+@router.get("/ui-pages")
+async def ui_pages(request: Request):
+    """Which tabs THIS user should see. Any signed-in user may ask; the super admin is
+    never hidden from anything. Menu curation only — every sensitive endpoint keeps its
+    own role guard, so hiding a tab is not what makes it safe."""
+    user = eo_auth.require_eo(request)
+    hidden, source = client_hidden_pages()
+    if eo_auth.is_superadmin(user):
+        hidden = []
+    return JSONResponse({"pages": list(UI_PAGES), "hidden_pages": hidden, "source": source})
+
+
+@router.get("/superadmin")
+async def superadmin_get(request: Request):
+    eo_auth.require_superadmin(request)
+    return JSONResponse(_superadmin_state())
+
+
+@router.put("/superadmin/pages")
+async def superadmin_pages(request: Request):
+    """Which pages the client's admins see. {"hidden_pages": [...]} or {"reset": true}."""
+    user = eo_auth.require_superadmin(request)
+    body = await _json_body(request)
+    if body.get("reset"):
+        eo_db.delete_setting("hidden_pages")
+        audit.log("client_pages_reset", user=user, request=request)
+    else:
+        raw = body.get("hidden_pages")
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="hidden_pages must be a list of page keys")
+        wanted = {str(p).strip().lower() for p in raw}
+        clean = [p for p in UI_PAGES if p in wanted]
+        eo_db.set_setting("hidden_pages", clean, updated_by=user["username"])
+        audit.log("client_pages_updated", user=user, detail={"hidden_pages": clean}, request=request)
+    return JSONResponse(_superadmin_state())
+
+
+@router.post("/superadmin/reset-data")
+async def superadmin_reset_data(request: Request):
+    """Delete test data before go-live (backed up first). Body: {"confirm": "DELETE",
+    "parts": ["calls", "outbound", "weddings", "audit"]}. Refused mid-call."""
+    user = eo_auth.require_superadmin(request)
+    body = await _json_body(request)
+    if str(body.get("confirm") or "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to confirm")
+    if live.count():
+        raise HTTPException(status_code=409,
+                            detail="A call is on the line right now. Try again when it has ended.")
+    try:
+        result = await data_reset.reset(body.get("parts"), user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_call_cache()
+    return JSONResponse(dict(result, state=_superadmin_state()))
+
+
+# ---------------------------------------------------------------------------------------
+# Subscription (the client's plan and usage) — display only, never blocks a call
+# ---------------------------------------------------------------------------------------
+@router.get("/subscription")
+async def subscription_get(request: Request):
+    user = eo_auth.require_eo(request)          # any signed-in user: read-only
+    return JSONResponse(subscription.snapshot(user))
+
+
+@router.put("/subscription")
+async def subscription_put(request: Request):
+    """Override the .env plan (service provider only). {"reset": true} goes back to .env."""
+    user = eo_auth.require_superadmin(request)
+    body = await _json_body(request)
+    if body.get("reset"):
+        eo_db.delete_setting(subscription.SETTING_KEY)
+        audit.log("subscription_reset", user=user, request=request)
+    else:
+        try:
+            clean = subscription.validate(body)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not clean:
+            raise HTTPException(status_code=400, detail="Nothing to save")
+        eo_db.set_setting(subscription.SETTING_KEY, clean, updated_by=user["username"])
+        audit.log("subscription_updated", user=user, detail=clean, request=request)
+    return JSONResponse(subscription.snapshot(user))

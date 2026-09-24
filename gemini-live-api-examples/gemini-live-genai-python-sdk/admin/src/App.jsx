@@ -17,12 +17,15 @@ import AgentEditor from './pages/AgentEditor.jsx'
 import Users from './pages/Users.jsx'
 import Settings from './pages/Settings.jsx'
 import Profile from './pages/Profile.jsx'
+import Subscription from './pages/Subscription.jsx'
+import SuperAdmin from './pages/SuperAdmin.jsx'
 
-function Protected({ children, adminOnly }) {
-  const { user, ready, isAdmin } = useAuth()
+function Protected({ children, adminOnly, superOnly }) {
+  const { user, ready, isAdmin, isSuperadmin } = useAuth()
   const loc = useLocation()
   if (!ready) return <div className="center">Loading…</div>
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />
+  if (superOnly && !isSuperadmin) return <Navigate to="/" replace />
   if (adminOnly && !isAdmin) return <Navigate to="/" replace />
   return children
 }
@@ -56,6 +59,8 @@ export default function App() {
         <Route path="/contacts" element={<Contacts />} />
         <Route path="/users" element={<Protected adminOnly><Users /></Protected>} />
         <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
+        <Route path="/subscription" element={<Subscription />} />
+        <Route path="/superadmin" element={<Protected superOnly><SuperAdmin /></Protected>} />
         <Route path="/profile" element={<Profile />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

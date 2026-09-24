@@ -218,7 +218,35 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
 );
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts(call_status, next_attempt_at);
+
+-- Small operator settings that must survive a restart (the plan override, the client's
+-- hidden pages). A generic key/JSON store rather than a column per setting.
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT 'null',            -- JSON
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+
+-- Who did what. Written for the actions worth being able to answer for later: clearing
+-- data, changing the plan, changing what the client can see.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER,
+    username   TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL,
+    target     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at DESC);
 """
+
+_SETTINGS_SQL = """CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT 'null', updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT '')"""
 
 
 _CONTACT_GUEST_COLUMNS = (
@@ -1321,3 +1349,129 @@ def names_by_phone(phones) -> dict:
     ph = ",".join("?" * len(phones))
     rows = _rows(f"SELECT phone, name FROM contacts WHERE phone IN ({ph}) ORDER BY id ASC", tuple(phones))
     return {r["phone"]: r["name"] for r in rows if (r.get("name") or "").strip()}
+
+
+# ---------------------------------------------------------------------------------------
+# Settings (key -> JSON), audit log, and the go-live data reset
+# ---------------------------------------------------------------------------------------
+_settings_ready_conn = None
+
+
+def _ensure_settings_table() -> None:
+    """The table exists after init(); this covers code paths (tests, tools) that never ran it."""
+    global _settings_ready_conn
+    conn = get_conn()
+    if _settings_ready_conn is conn:
+        return
+    with _lock:
+        conn.execute(_SETTINGS_SQL)
+        conn.commit()
+    _settings_ready_conn = conn
+
+
+def get_setting(key: str, default=None):
+    _ensure_settings_table()
+    r = _one("SELECT value FROM settings WHERE key = ?", (str(key),))
+    if not r:
+        return default
+    try:
+        return json.loads(r["value"])
+    except (TypeError, ValueError):
+        return default
+
+
+def set_setting(key: str, value, updated_by: str = "") -> None:
+    _ensure_settings_table()
+    _exec("INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?,?,?,?) "
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, "
+          "updated_by = excluded.updated_by",
+          (str(key), json.dumps(value, ensure_ascii=False, default=str), _now(), updated_by or ""))
+
+
+def delete_setting(key: str) -> None:
+    _ensure_settings_table()
+    _exec("DELETE FROM settings WHERE key = ?", (str(key),))
+
+
+def add_audit(user_id=None, username="", action="", target="", detail="", ip="") -> int:
+    return _exec(
+        "INSERT INTO audit_log (user_id, username, action, target, detail, ip, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (user_id, username or "", action or "", target or "", detail or "", ip or "", _now()))
+
+
+def list_audit(limit=100, offset=0) -> dict:
+    total = _one("SELECT COUNT(*) c FROM audit_log")["c"]
+    rows = _rows("SELECT * FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                 (int(limit), int(offset)))
+    return {"items": rows, "total": int(total)}
+
+
+def data_counts() -> dict:
+    """What a go-live reset would remove, table by table."""
+    def n(table):
+        return int(_one(f"SELECT COUNT(*) c FROM {table}")["c"])
+    return {"weddings": n("weddings"), "events": n("events"), "contacts": n("contacts"),
+            "campaigns": n("campaigns"), "campaign_contacts": n("campaign_contacts"),
+            "audit": n("audit_log")}
+
+
+def backup_db(dest_path: str) -> None:
+    """A consistent copy of the whole database (SQLite's online backup), taken before a reset."""
+    os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    src = get_conn()
+    with _lock:
+        dst = sqlite3.connect(dest_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+
+
+def wipe_data(outbound=False, weddings=False, audit=False) -> dict:
+    """Delete test data before go-live, in one transaction. ALWAYS keeps users, settings
+    and the shipped global agents. Returns the rows removed per table.
+
+    Ordering matters. events and per-wedding agents carry a real FK to weddings
+    (ON DELETE CASCADE), but campaigns.wedding_id/event_id/agent_id and contacts.wedding_id
+    are bare INTEGERs with NO foreign key, so SQLite will not clean them up — they would be
+    left pointing at rows that no longer exist. Children go first, and contacts.wedding_id
+    resets to 0 rather than NULL because UNIQUE(created_by, wedding_id, phone) relies on it
+    (a NULL there stops ON CONFLICT ever firing)."""
+    conn = get_conn()
+    out, sequences = {}, []
+    with _lock:
+        try:
+            if outbound:
+                out["campaign_contacts"] = conn.execute("DELETE FROM campaign_contacts").rowcount
+                out["campaigns"] = conn.execute("DELETE FROM campaigns").rowcount
+                out["contacts"] = conn.execute("DELETE FROM contacts").rowcount
+                sequences += ["campaign_contacts", "campaigns", "contacts"]
+            if weddings:
+                # any campaign still pointing at a wedding we are about to remove
+                if not outbound:
+                    conn.execute("DELETE FROM campaign_contacts WHERE campaign_id IN "
+                                 "(SELECT id FROM campaigns WHERE wedding_id IS NOT NULL)")
+                    conn.execute("DELETE FROM campaigns WHERE wedding_id IS NOT NULL")
+                    conn.execute("UPDATE contacts SET wedding_id = 0 WHERE wedding_id <> 0")
+                # per-wedding agent copies go with their wedding; the global (wedding_id IS
+                # NULL) templates are the product and must survive.
+                out["agents"] = conn.execute(
+                    "DELETE FROM agents WHERE wedding_id IS NOT NULL").rowcount
+                out["events"] = conn.execute("DELETE FROM events").rowcount
+                out["weddings"] = conn.execute("DELETE FROM weddings").rowcount
+                sequences += ["events", "weddings"]
+            if audit:
+                out["audit"] = conn.execute("DELETE FROM audit_log").rowcount
+                sequences.append("audit_log")
+            if sequences:
+                try:                                   # ids start again at 1 (campaign #1, not #37)
+                    conn.execute(f"DELETE FROM sqlite_sequence WHERE name IN ({','.join('?' * len(sequences))})",
+                                 tuple(sequences))
+                except sqlite3.OperationalError:
+                    pass                               # no AUTOINCREMENT row written yet
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return out

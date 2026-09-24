@@ -101,6 +101,13 @@ export async function getBlob(path, { timeoutMs = 15000 } = {}) {
 }
 
 // Build a query string from a filters object (skips empty values).
+export function fmtDur(s) {
+  s = Math.round(Number(s) || 0)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}:${String(s % 60).padStart(2, '0')}`
+}
+
 export function qs(params) {
   const u = new URLSearchParams()
   for (const [k, v] of Object.entries(params || {})) {

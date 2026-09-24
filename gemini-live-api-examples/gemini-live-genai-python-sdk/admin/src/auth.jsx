@@ -37,7 +37,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthCtx.Provider value={{ user, ready, login, logout, isAdmin: user?.role === 'eo_admin' }}>
+    <AuthCtx.Provider value={{ user, ready, login, logout, isAdmin: user?.role === 'eo_admin', isSuperadmin: !!user?.is_superadmin }}>
       {children}
     </AuthCtx.Provider>
   )

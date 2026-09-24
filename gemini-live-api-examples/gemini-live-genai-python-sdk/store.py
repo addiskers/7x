@@ -104,6 +104,44 @@ async def _run(fn, *args):
     return await loop.run_in_executor(None, fn, *args)
 
 
+def call_metas():
+    """A snapshot of every call's lightweight record (sync; the index lives in memory)."""
+    with _LOCK:
+        return [dict(m) for m in _INDEX.values()]
+
+
+def recording_count() -> int:
+    try:
+        return sum(1 for n in os.listdir(RECORDINGS_DIR) if n.endswith(".wav"))
+    except FileNotFoundError:
+        return 0
+
+
+def _archive_sync(dest_dir):
+    """Move every call record and recording into dest_dir (a go-live reset keeps them as a
+    backup instead of deleting them), leave empty folders behind, and empty the index.
+
+    scheduler_state.json is deliberately left alone: it is live operating state, not call
+    data, and moving it would restart the scheduler's bookkeeping."""
+    import shutil
+    moved = {"calls": 0, "recordings": 0}
+    os.makedirs(dest_dir, exist_ok=True)
+    for key, src in (("calls", CALLS_DIR), ("recordings", RECORDINGS_DIR)):
+        if os.path.isdir(src):
+            moved[key] = sum(1 for n in os.listdir(src) if not n.endswith(".tmp"))
+            shutil.move(src, os.path.join(dest_dir, key))
+        os.makedirs(src, exist_ok=True)
+    with _LOCK:
+        _INDEX.clear()
+    logger.warning(f"Call store archived to {dest_dir}: {moved['calls']} call(s), "
+                   f"{moved['recordings']} recording(s)")
+    return moved
+
+
+async def archive_calls(dest_dir):
+    return await _run(_archive_sync, dest_dir)
+
+
 async def init():
     await _run(_init_sync)
 
