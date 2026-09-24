@@ -114,7 +114,7 @@ def test_the_schedule_agent_needs_no_event_and_reads_the_upcoming_functions():
 def test_the_schedule_agent_keeps_what_the_team_tested():
     t = _seed("wedding_schedule")["prompt_template"]
     for rule in ("Take an RSVP", "room allocation", "Change, or promise a change to, the schedule",
-                 "Would you like more detail on any of them", "hospitality desk",
+                 "Do you have any questions about any of these?", "hospitality desk",
                  "guest support desks"):
         assert rule in t, rule
 
@@ -331,9 +331,28 @@ def test_the_schedule_turn_is_a_checklist_with_the_count_and_the_names():
     out = pr.render_prompt(_seed("wedding_schedule"), events=events, now=now,
                            wedding={"hospitality_team": "Ved and Riya's Hospitality Team"})
     si = out["system_instruction"]
-    assert "There are three functions to tell them about: Hi-Tea, Sufi Night and After Party." in si
+    assert "The functions to tell them about, three in all: Hi-Tea, Sufi Night and After Party." in si
     assert "never stop after the first" in si
     assert "Old Lunch" not in si
+
+
+def test_the_schedule_turn_gives_every_detail_at_once():
+    """"i want all event details at once" — the team's tested prompt gave every function with
+    all its highlights in one go; ours held the highlights back until asked."""
+    t = _seed("wedding_schedule")["prompt_template"]
+    assert "ALL of its highlights" in t
+    assert "Do not hold anything back for later" in t
+    assert "Keep the rest of the highlights for when they ask" not in t
+
+
+def test_a_single_function_still_reads_as_a_sentence():
+    """"There are one functions" — the count is now phrased so any number reads correctly."""
+    now = datetime(2026, 9, 24, 18, 0, tzinfo=IST)
+    out = pr.render_prompt(_seed("wedding_schedule"), now=now,
+                           events=[{"name": "Sufi Night", "event_date": "2026-09-25"}])
+    si = out["system_instruction"]
+    assert "The functions to tell them about, one in all: Sufi Night." in si
+    assert "one functions" not in si
 
 
 def test_every_agent_forbids_asking_for_approval():
