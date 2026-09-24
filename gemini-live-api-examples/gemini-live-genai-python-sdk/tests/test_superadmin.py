@@ -63,7 +63,7 @@ def test_a_full_reset_keeps_users_and_the_shipped_agents(fresh_eo_db):
     assert counts["weddings"] == 0 and counts["events"] == 0
     assert counts["contacts"] == 0 and counts["campaigns"] == 0
     slugs = sorted(a["slug"] for a in db.all_agents())
-    assert slugs == ["event_reminder", "logistics_concierge"]
+    assert slugs == ["event_reminder", "logistics_concierge", "wedding_schedule"]
     assert all(a["wedding_id"] is None for a in db.all_agents())
     assert len(db.list_users()) >= 1
 

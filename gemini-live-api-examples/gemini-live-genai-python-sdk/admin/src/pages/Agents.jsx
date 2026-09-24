@@ -4,7 +4,7 @@ import { api } from '../api.js'
 import PageHeader from '../components/PageHeader.jsx'
 import { useWedding } from '../wedding.jsx'
 
-const KIND_PILL = { reminder: 'green', logistics: 'blue', custom: 'amber' }
+const KIND_PILL = { reminder: 'green', schedule: 'green', logistics: 'blue', custom: 'amber' }
 
 export default function Agents() {
   const navigate = useNavigate()

@@ -106,8 +106,8 @@ def test_two_events_produce_two_different_prompts(wedding_world):
     assert saanth != ghazal
 
     def about(prompt):
-        """The function the call is anchored on — where the agent starts the schedule."""
-        block = prompt.split("## THE FUNCTION THIS CALL IS ANCHORED ON")[1]
+        """The function named in THE ONE EVENT block — what this call is for."""
+        block = prompt.split("## THE ONE EVENT YOU ARE CALLING ABOUT")[1]
         return block.split("\n")[1]
 
     assert "Saanth Ritual" in about(saanth) and "Ghazal Night" not in about(saanth)

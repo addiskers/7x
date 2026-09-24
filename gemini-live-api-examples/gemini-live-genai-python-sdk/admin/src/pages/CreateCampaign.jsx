@@ -57,7 +57,7 @@ export default function CreateCampaign() {
   useEffect(() => {
     (async () => {
       try {
-        const a = await api.get('/agents' + (weddingId ? `?wedding_id=${weddingId}` : ''))
+        const a = await api.get('/agent-choices' + (weddingId ? `?wedding_id=${weddingId}` : ''))
         setAgents((a.items || []).filter((x) => x.active))
         if (weddingId) {
           const e = await api.get(`/weddings/${weddingId}/events`)
@@ -73,12 +73,13 @@ export default function CreateCampaign() {
 
   // Picking an event pre-selects its audience — still editable, it just saves the clicking.
   useEffect(() => {
-    if (!event || !weddingId) return
+    const wholeSchedule = !event && agent?.kind === 'schedule'
+    if (!weddingId || (!event && !wholeSchedule)) return
     (async () => {
       try {
         const r = await api.post('/campaigns/preflight', {
           name: name || 'preview', start_at: new Date(Date.now() + 300000).toISOString(),
-          agent_id: Number(agentId), event_id: Number(eventId), wedding_id: weddingId,
+          agent_id: Number(agentId), event_id: event ? Number(eventId) : null, wedding_id: weddingId,
         })
         setSelected(new Set((r.audience?.guests || []).map((g) => g.id)))
       } catch { /* leave the selection alone */ }
@@ -186,7 +187,8 @@ export default function CreateCampaign() {
             <select value={eventId} onChange={(e) => setEventId(e.target.value)}
                     disabled={!agentId}>
               <option value="">{agent && !agent.requires_event
-                ? 'No event — a logistics call' : 'Select an event…'}</option>
+                ? (agent.kind === 'schedule' ? 'No event — the whole schedule' : 'No event — a logistics call')
+                : 'Select an event…'}</option>
               {events.map((ev) => (
                 <option key={ev.id} value={ev.id}>
                   {ev.name}{ev.event_date ? ` · ${ev.event_date}` : ''}

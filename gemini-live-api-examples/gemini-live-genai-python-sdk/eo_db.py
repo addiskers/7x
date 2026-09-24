@@ -395,7 +395,7 @@ _STALE_MARKERS = ("EO Gujarat", "Raj Goodman", "AI First Mindset", "DoubleTree",
 _REQUIRED_FRAGMENTS = (
     # Either the lookup list or the detailed walk-through counts: both give the agent
     # every function, which is what "kisi or event ki details nahi de raha" was about.
-    (("{schedule}", "{schedule_detail}"), "cannot answer about other functions"),
+    (("{schedule}", "{schedule_detail}", "{upcoming_schedule}"), "cannot answer about other functions"),
     (("SPEAK TO A PERSON",), "hangs up when asked for a person"),
 )
 

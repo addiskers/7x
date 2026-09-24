@@ -263,6 +263,36 @@ def refresh_agents(force_all=False):
                   f"Re-run with --force-all to update it.")
 
 
+def preview_schedule(wedding_id=None):
+    """Render the Wedding Schedule agent for a wedding with NO event, exactly as a
+    whole-schedule campaign call would. Read-only: unlike --preview EVENT_KEY it does not
+    seed, so it never touches events edited in the UI."""
+    eo_db.init()
+    weddings = eo_db.list_weddings()
+    if wedding_id:
+        wedding = eo_db.get_wedding(int(wedding_id))
+    else:
+        wedding = (next((w for w in weddings if w["name"] == WEDDING_NAME), None)
+                   or (weddings[0] if weddings else None))
+    if not wedding:
+        raise SystemExit("No wedding to preview. Use --list-weddings.")
+    agent = eo_db.get_agent_by_slug("wedding_schedule")
+    if not agent:
+        raise SystemExit("The Wedding Schedule agent is not in this database yet — restart the "
+                         "app once so it is seeded, or run --refresh-agents.")
+    guests = eo_db.list_contacts(wedding_id=wedding["id"], limit=1)["items"]
+    r = prompt_render.render_prompt(agent, wedding=wedding, event=None,
+                                    guest=guests[0] if guests else None,
+                                    events=eo_db.list_events(wedding["id"]))
+    print(f"Wedding #{wedding['id']} '{wedding['name']}' — no event (whole schedule)")
+    print("=" * 70)
+    print(r["system_instruction"])
+    print("=" * 70)
+    print("TRIGGER:", r["trigger"])
+    if r["missing"]:
+        print("\nMISSING (blank in the data, left out of the prompt):", r["missing"])
+
+
 def preview(wid, event_id, agent, owner):
     guests = eo_db.guests_for_audience(wid, "all", created_by=owner)
     r = prompt_render.render_prompt(agent, wedding=eo_db.get_wedding(wid),
@@ -280,7 +310,11 @@ def preview(wid, event_id, agent, owner):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phone", help="set the sample guest's number, e.g. +919876543210")
-    ap.add_argument("--preview", metavar="EVENT_KEY", help="print the rendered prompt")
+    ap.add_argument("--preview", metavar="EVENT_KEY",
+                    help="print the rendered prompt; 'schedule' renders the Wedding Schedule "
+                         "agent with no event, read-only")
+    ap.add_argument("--wedding", metavar="ID", type=int,
+                    help="with --preview schedule, the wedding to render (default: this one)")
     ap.add_argument("--logistics", action="store_true",
                     help="with --preview, render the logistics agent instead")
     ap.add_argument("--list", action="store_true", help="list the event keys and exit")
@@ -297,6 +331,10 @@ def main():
     ap.add_argument("--yes", action="store_true",
                     help="with --delete-wedding, skip the confirmation prompt")
     args = ap.parse_args()
+
+    if args.preview == "schedule":
+        preview_schedule(args.wedding)
+        return
 
     if args.list_weddings:
         eo_db.init()

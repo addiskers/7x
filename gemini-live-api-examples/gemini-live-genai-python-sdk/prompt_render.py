@@ -67,7 +67,7 @@ KNOWN_PLACEHOLDERS = frozenset({
     "event_name", "event_date", "event_date_spoken", "event_time", "event_end_time",
     "venue", "venue_address", "dress_code", "announcement", "audience",
     # the whole wedding's schedule, filtered to what THIS guest is invited to
-    "schedule", "schedule_detail", "event_count",
+    "schedule", "schedule_detail", "upcoming_schedule", "event_count",
 })
 
 
@@ -127,7 +127,24 @@ def _spoken_time(value):
     if minute in _MINUTES and minute > 30:
         nxt = _HOURS[(hour12 + 1) % 12 if (hour12 + 1) % 12 else 12]
         return f"{_MINUTES[minute]} to {nxt} {part}"
-    return f"{spoken_hour} {minute} {part}"
+    # Any other minute: "five twenty-seven", "five oh seven" — never the digits, which the
+    # model reads out as digits ({now_time} hit this: "five 27 in the evening").
+    return f"{spoken_hour} {_minute_words(minute)} {part}"
+
+
+_ONES = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+         "eighteen", "nineteen")
+_TENS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty"}
+
+
+def _minute_words(minute):
+    if minute < 10:
+        return f"oh {_ONES[minute]}"
+    if minute < 20:
+        return _ONES[minute]
+    tens, ones = divmod(minute, 10)
+    return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
 
 
 def _when_phrase(event_date, today):
@@ -211,7 +228,7 @@ def build_schedule(events, *, side=None, today=None, current_event_id=None):
     return "\n".join(lines)
 
 
-def build_schedule_detail(events, *, side=None, today=None):
+def build_schedule_detail(events, *, side=None, today=None, upcoming_only=False):
     """The guest's functions WITH their highlights, for a call that briefs all of them.
 
         Hi-Tea - on the twenty-fifth of September, four in the evening, at Harvest.
@@ -223,11 +240,19 @@ def build_schedule_detail(events, *, side=None, today=None):
     richer calls purely by filling in announcements — no prompt edit.
 
     Same side filtering and the same spoken date/time helpers as build_schedule: a time
-    must never reach the model as digits."""
+    must never reach the model as digits.
+
+    upcoming_only drops functions dated before `today`, for a call that covers the whole
+    wedding: a guest rung on the last day must not be told about a Mehendi that is over.
+    Today's functions stay (one may be under way), and so do undated ones."""
     blocks = []
     for e in events or []:
         if not guest_can_attend(e, side):
             continue
+        if upcoming_only and today:
+            d = _as_date(e.get("event_date"))
+            if d and d < today:
+                continue
         name = str(e.get("name") or "").strip()
         if not name:
             continue
@@ -368,6 +393,8 @@ def build_context(*, wedding=None, event=None, guest=None, agent=None, now=None,
             "schedule": build_schedule(events, side=side, today=today,
                                        current_event_id=e.get("id")),
             "schedule_detail": build_schedule_detail(events, side=side, today=today),
+            "upcoming_schedule": build_schedule_detail(events, side=side, today=today,
+                                                       upcoming_only=True),
             "event_count": str(len(attending)) if attending else "",
         })
 
@@ -441,26 +468,37 @@ def render(template, ctx, *, strict=False):
     template = template or ""
     missing = set()
     unknown = set()
-    # Which output lines lost a value — only those get the punctuation cleanup, so the
-    # author's own prose is never rewritten.
-    blanked_offsets = []
-
-    def _sub(match):
+    # Which OUTPUT lines lost a value — only those get the punctuation cleanup, so the
+    # author's own prose is never rewritten. Counted in the output as it is built, not in
+    # the template: {schedule} and friends expand to several lines, so a template line
+    # number points at the wrong output line once one of them has been substituted — the
+    # cleanup then stripped words ("and", "with") from untouched prose further down.
+    touched = set()
+    pieces = []
+    out_line = 0
+    pos = 0
+    for match in _PLACEHOLDER_RE.finditer(template):
+        literal = template[pos:match.start()]
+        pieces.append(literal)
+        out_line += literal.count("\n")
         name = match.group(1)
         if name not in KNOWN_PLACEHOLDERS:
             unknown.add(name)
-            if strict:
-                return match.group(0)
-            blanked_offsets.append(match.start())
-            return ""
-        value = ctx.get(name, "")
-        if value in (None, ""):
-            missing.add(name)
-            blanked_offsets.append(match.start())
-            return ""
-        return str(value)
-
-    out = _PLACEHOLDER_RE.sub(_sub, template)
+            value = match.group(0) if strict else ""
+            if not strict:
+                touched.add(out_line)
+        else:
+            value = ctx.get(name, "")
+            if value in (None, ""):
+                missing.add(name)
+                touched.add(out_line)
+                value = ""
+            value = str(value)
+        pieces.append(value)
+        out_line += value.count("\n")
+        pos = match.end()
+    pieces.append(template[pos:])
+    out = "".join(pieces)
     if strict and unknown:
         raise PromptRenderError(
             "unknown placeholder(s): " + ", ".join(f"{{{n}}}" for n in sorted(unknown)))
@@ -469,9 +507,6 @@ def render(template, ctx, *, strict=False):
         # existed — surface it loudly rather than silently speaking a gap.
         logger.warning("prompt_render: unknown placeholders ignored: %s", sorted(unknown))
 
-    # Map template offsets to line numbers; substitution never adds or removes newlines,
-    # so line indices are stable between template and output.
-    touched = {template.count("\n", 0, off) for off in blanked_offsets}
     return _tidy(out, touched), sorted(missing)
 
 

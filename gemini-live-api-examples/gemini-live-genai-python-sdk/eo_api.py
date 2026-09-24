@@ -695,6 +695,21 @@ async def agents_list(request: Request):
                          "placeholders": sorted(prompt_render.KNOWN_PLACEHOLDERS)})
 
 
+@router.get("/agent-choices")
+async def agent_choices(request: Request):
+    """The agents a campaign can use — names and shape only, never the prompt. Create
+    Campaign needs this for every signed-in user; the full /agents rows (with the scripts)
+    stay admin-only."""
+    user = eo_auth.require_eo(request)
+    wedding_id = request.query_params.get("wedding_id") or None
+    if wedding_id:
+        _wedding_or_404(user, wedding_id)
+    keep = ("id", "wedding_id", "name", "slug", "kind", "description", "requires_event", "active")
+    items = [{k: a.get(k) for k in keep}
+             for a in eo_db.list_agents(wedding_id=wedding_id, active_only=False)]
+    return JSONResponse({"items": items, "total": len(items)})
+
+
 @router.get("/agents/{agent_id}")
 async def agents_detail(agent_id: int, request: Request):
     user = eo_auth.require_eo_admin(request)
@@ -1028,6 +1043,10 @@ def _campaign_payload(user, body):
                     if c.get("status") == "valid"]
     elif event and wedding_id:
         contacts = eo_db.guests_for_audience(wedding_id, event.get("audience"), created_by=scope)
+    elif wedding_id and agent.get("kind") == "schedule":
+        # A whole-schedule call is for everyone at the wedding; each guest still hears only
+        # the functions they are invited to (the prompt filters by side).
+        contacts = eo_db.guests_for_audience(wedding_id, "all", created_by=scope)
     else:
         contacts = []
     # dedupe by phone: duplicate rows would double-dial and the reap (keyed on

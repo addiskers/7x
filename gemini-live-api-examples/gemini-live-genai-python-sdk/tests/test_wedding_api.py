@@ -94,7 +94,8 @@ def test_agents_list_ships_the_placeholder_vocabulary(api):
     """The UI palette and the save-time validator must read one source of truth."""
     import prompt_render
     data = api["client"].get("/api/eo/agents", headers=api["h"]).json()
-    assert {a["slug"] for a in data["items"]} == {"event_reminder", "logistics_concierge"}
+    assert {a["slug"] for a in data["items"]} == {"event_reminder", "logistics_concierge",
+                                                  "wedding_schedule"}
     assert set(data["placeholders"]) == set(prompt_render.KNOWN_PLACEHOLDERS)
 
 

@@ -24,11 +24,11 @@ def test_shipped_agents_are_seeded_once(fresh_eo_db):
     eo_db = fresh_eo_db
     eo_db.init()
     slugs = sorted(a["slug"] for a in eo_db.list_agents())
-    assert slugs == ["event_reminder", "logistics_concierge"]
+    assert slugs == ["event_reminder", "logistics_concierge", "wedding_schedule"]
     # the seeds are global so every wedding can use them without copying
     assert all(a["wedding_id"] is None for a in eo_db.list_agents())
     eo_db.init()
-    assert len(eo_db.list_agents()) == 2             # never duplicated
+    assert len(eo_db.list_agents()) == 3             # never duplicated
 
 
 def test_seeding_never_clobbers_an_operator_edit(fresh_eo_db):
