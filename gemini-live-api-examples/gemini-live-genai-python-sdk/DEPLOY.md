@@ -217,13 +217,13 @@ back to the shipped reminder agent. Plivo delivers the caller's
 number in several shapes — `917043020542`, `+917043020542`, `7043020542`, `07043020542` — and
 all of them match the same guest.
 
-## The strict reminder campaign (one function, three lines)
+## The one-function reminder campaign
 
-The Event Reminder Specialist speaks the family's script and nothing else: "Hello, I'm
-speaking from <team>. Am I speaking to <name>?" → "I just wanted to inform you that
-<function> will start at <time> at <venue>." → "Looking forward to seeing you." It names no
-other function, answers no question (one fixed line, then the sign-off) and speaks English,
-Hindi or Gujarati only.
+The Event Reminder Specialist opens with the family's lines — "Hello, I'm speaking from
+<team>. Am I speaking to <name>?" → "Hi <name>! I just wanted to inform you that <function>
+will start at <time> at <venue>." — answers what it knows about THAT function, notes what
+the guest tells it ("pure vegetarian"), and never names another function. English, Hindi or
+Gujarati, closing in the language of the call.
 
 After a deploy that changes `agent_seeds.py`:
 

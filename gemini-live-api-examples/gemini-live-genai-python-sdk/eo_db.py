@@ -394,9 +394,11 @@ _STALE_MARKERS = ("EO Gujarat", "Raj Goodman", "AI First Mindset", "DoubleTree",
                   "Sir or Ma'am, am I speaking",
                   # the conversational reminder the strict script replaced (25 Sep 2026)
                   "have some details about this evening")
-# A script-only agent (the strict reminder) answers nothing by design: the fragments a
-# conversational agent must carry do not apply to it.
+# A script-only agent answers nothing by design: the fragments a conversational agent
+# must carry do not apply to it. A one-function agent (the reminder since 25 Sep 2026)
+# carries no schedule by design, but must still escalate.
 _STRICT_MARKER = "## STRICT RULES"
+_ONE_FUNCTION_MARKER = "## ONE FUNCTION ONLY"
 _REQUIRED_FRAGMENTS = (
     # Either the lookup list or the detailed walk-through counts: both give the agent
     # every function, which is what "kisi or event ki details nahi de raha" was about.
@@ -421,8 +423,11 @@ def stale_agent_reasons(agent) -> list:
         return []
     reasons = [f"still says '{m}'" for m in _STALE_MARKERS if m in text]
     if _STRICT_MARKER not in text:
-        reasons += [why for frags, why in _REQUIRED_FRAGMENTS
-                    if not any(f in text for f in frags)]
+        for frags, why in _REQUIRED_FRAGMENTS:
+            if _ONE_FUNCTION_MARKER in text and "{schedule}" in frags:
+                continue                    # no schedule is the point of that agent
+            if not any(f in text for f in frags):
+                reasons.append(why)
     return reasons
 
 

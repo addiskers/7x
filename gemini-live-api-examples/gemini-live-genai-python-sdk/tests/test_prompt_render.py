@@ -305,9 +305,9 @@ def test_no_agent_ever_says_sir_or_maam_aloud():
         assert "Sir or Ma'am" not in seed["trigger_template"], slug
 
 
-# The agents that hold a conversation. The Event Reminder is a fixed script since 25 Sep
-# 2026 ("AI should not reply to any other query"), so the rules about answering, escalating
-# and asking "anything else?" apply to these two only; tests/test_strict_reminder.py has it.
+# The agents that carry the whole schedule, ten languages and the "Hey" opening. The Event
+# Reminder (since 25 Sep 2026) is one function only, three languages, and opens with the
+# family's "Hello"; tests/test_strict_reminder.py has its own rules.
 _CONVERSATIONAL = ("wedding_schedule", "logistics_concierge")
 
 
@@ -328,16 +328,11 @@ def test_the_conversational_agents_may_discuss_other_functions():
 def test_both_agents_escalate_instead_of_hanging_up():
     """"koi person ke sath baat karane ko bolu to end ho jata hai" and "out of context
     puchta hai to call end ho jata hai"."""
-    shipped = _shipped()
-    for slug in _CONVERSATIONAL:
-        t = shipped[slug]["prompt_template"]
+    for slug, seed in _shipped().items():
+        t = seed["prompt_template"]
         assert "I will notify the team" in t, slug
         assert "SPEAK TO A PERSON" in t, slug
         assert "NONE of these is a reason to end the call" in t, slug
-    # the strict reminder answers nothing — but a question still gets one line and the
-    # sign-off, never a hangup mid-sentence
-    t = shipped["event_reminder"]["prompt_template"]
-    assert "The hospitality team will get back to you on that." in t
 
 
 def test_no_agent_offers_a_phone_number_to_ring_back():
@@ -429,27 +424,18 @@ def test_the_logistics_agent_can_answer_about_the_guests_stay():
     assert "Do NOT list the functions" not in t
 
 
-def test_the_reminder_agent_waits_a_short_beat_after_its_close():
-    """It used to wait 15s to hear a question; the strict script answers none, so the
-    post-close window is short — but never zero, which would fall back to the server-wide
-    default."""
-    assert 0 < _shipped()["event_reminder"]["listen_seconds"] <= 10
+def test_the_reminder_agent_listens_long_enough_to_hear_a_question():
+    """At 6s it hung up while guests were still asking."""
+    assert _shipped()["event_reminder"]["listen_seconds"] >= 12
 
 
 def test_every_agent_treats_listening_sounds_as_go_on():
     """"if I just say 'okay' or 'barobar' ... it says 'thank you' and cuts the call" and "when I ask
     more questions, it just says 'thank you' and hangs up". The model read a backchannel as the end."""
-    shipped = _shipped()
-    for slug, seed in shipped.items():
+    for slug, seed in _shipped().items():
         t = seed["prompt_template"]
         assert "LISTENING SOUNDS ARE NOT GOODBYES" in t, slug
         assert "barobar" in t, slug
-    for slug in _CONVERSATIONAL:
-        t = shipped[slug]["prompt_template"]
         assert "Is there anything else I can help you with?" in t, slug
         assert "Never answer a question with a goodbye" in t, slug
         assert "record_outcome belongs to that final turn only" in t, slug
-    # the strict script closes on a statement and records in that same turn
-    t = shipped["event_reminder"]["prompt_template"]
-    assert "NEVER call end_call in a turn that asks a question" in t
-    assert "Never announce that you are recording anything" in t

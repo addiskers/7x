@@ -135,7 +135,7 @@ def test_event_reminder_is_about_one_event_and_one_event_only():
     t = _seed("event_reminder")["prompt_template"]
     assert "{schedule}" not in t and "{schedule_detail}" not in t
     assert "## THE ONE EVENT YOU ARE CALLING ABOUT" in t
-    assert "## STRICT RULES" in t
+    assert "## ONE FUNCTION ONLY" in t
     assert "Do NOT read the whole schedule out unless they actually ask" not in t
 
 

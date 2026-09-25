@@ -1,6 +1,6 @@
-"""The strict Event Reminder (25 Sep 2026): the family's three-line script for one function,
-no other function named, no question answered — and the next-function fallback a call with
-no function needs."""
+"""The one-function Event Reminder (25 Sep 2026): the family's opening and reminder lines,
+warmly, answering what it knows about THAT function — and never naming another. Plus the
+next-function fallback a call with no function needs, and the script-only call-back trigger."""
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -35,14 +35,13 @@ def _at(hh, mm=0):
     return datetime(2026, 9, 25, hh, mm, tzinfo=_IST)
 
 
-# ------------------------------------------------------------------ the script itself
-def test_the_three_lines_are_in_the_prompt_word_for_word():
+# ------------------------------------------------------------------ the family's lines
+def test_the_familys_lines_are_in_the_prompt_word_for_word():
     si = _render()["system_instruction"]
-    assert "Hello, I'm speaking from Ved and Riya's Hospitality Team." in si
-    assert "Am I speaking to Apeksha?" in si
-    assert ("I just wanted to inform you that Sufi Night will start at seven in the evening "
-            "at The Great Park.") in si
-    assert "Looking forward to seeing you." in si
+    assert "Hello, I'm speaking from Ved and Riya's Hospitality Team. Am I speaking to Apeksha?" in si
+    assert ("Hi Apeksha! I just wanted to inform you that Sufi Night will start at seven in the "
+            "evening at The Great Park.") in si
+    assert "looking forward to seeing them there" in si
     assert "19:00" not in si and "7:00" not in si            # spoken, never digits
 
 
@@ -55,51 +54,56 @@ def test_no_other_function_is_named_anywhere():
     si = _render()["system_instruction"]
     for other in ("Hi-Tea", "Harvest", "After Party", "Ballroom"):
         assert other not in si, other
+    assert "## ONE FUNCTION ONLY" in si
     assert "Never mention any other function" in si
+    assert "the team will share those details with them separately" in si
 
 
-def test_nothing_beyond_the_script_is_offered():
-    """"Nothing else to be mentioned other than what i have written above"."""
-    t = _seed()["prompt_template"]
-    for ph in ("{dress_code}", "{announcement}", "{hotel}", "{room_number}", "{side_phrase}"):
-        assert ph not in t, ph
+def test_it_is_warm_and_helpful_about_this_function():
+    """The first strict cut deflected "what time?" and "I am pure vegetarian" to "the team
+    will get back to you" and hung up — the family wanted the old manner back, minus the
+    other functions."""
     si = _render()["system_instruction"]
-    assert "Is there anything else I can help you with?" not in si
-    assert "Do you have any questions about any of these?" not in si
-    assert "guest support desks" not in si
-    assert "excited to welcome" not in si.replace('no "excited to welcome you"', "").replace(
-        "no \"we're excited to welcome you\"", "")
-    assert "## STRICT RULES" in si
+    assert "acknowledge them warmly, by name" in si
+    assert "Answer whatever you can from the facts above — the time again, the venue" in si
+    assert "Noted, pure vegetarian" in si
+    assert "put it in the note when you record the outcome" in si
+    assert "## WHEN THEY ASK YOU SOMETHING ELSE" in si         # the helpfulness block is back
+    assert "Is there anything else I can help you with?" in si
+    assert "The hospitality team will get back to you on that." not in si
 
 
-def test_a_question_gets_one_fixed_line_then_the_sign_off():
-    """"AI should not reply to any other query" — but a guest with a question is never hung
-    up on mid-sentence: one line, then the close."""
-    si = _render()["system_instruction"]
-    assert "The hospitality team will get back to you on that." in si
-    assert "Never answer the question itself" in si
-    assert "WHEN THEY ASK YOU SOMETHING ELSE" not in si      # the helpfulness block is gone
-
-
-def test_three_languages_and_never_a_menu():
-    """Gujarati was answered in Hindi, then the agent offered "two options", then three, then
-    drifted into Tamil — all from a prompt that named ten languages and asked when unsure."""
+def test_three_languages_no_menu_and_the_goodbye_stays_in_the_calls_language():
+    """Gujarati was answered in Hindi, a menu of "two options" was offered, and after a
+    switch the closing came back in English."""
     si = _render()["system_instruction"]
     assert "You understand English, Hindi and Gujarati — nothing else." in si
-    assert "never in Hindi" in si                             # Gujarati is not Hindi
+    assert "never in Hindi" in si
     assert "Never offer a choice of languages" in si
     assert "Would you prefer to continue in" not in si
-    assert "Marathi, Punjabi, Bengali" not in si              # the ten-language sentence
+    assert "Marathi, Punjabi, Bengali" not in si
+    assert "Say everything — the reminder, your answers and your goodbye — in that language" in si
+    assert "Never switch back to English for the closing" in si
+
+
+def test_no_outcome_before_the_reminder_and_announcements_are_not_the_guest():
+    """Devvrat's call opened on the carrier's "Your call has been forwarded"; the model
+    recorded an outcome on it, the bridge's mute-record nudge asked for "your ONE short
+    closing", and the guest heard "Looking forward to seeing you" with no reminder."""
+    si = _render()["system_instruction"]
+    assert "your call has been forwarded" in si
+    assert "is the network, not the guest" in si
+    assert "never call record_outcome before you have said THE REMINDER to a person" in si
 
 
 def test_the_shared_rules_it_still_needs_are_present():
     si = _render()["system_instruction"]
     for heading in ("## IF THE LINE IS BAD", "## IF A CALL-SCREENING ASSISTANT ANSWERS",
                     "## IF THEY ASK WHY YOU ARE CALLING", "## LISTENING SOUNDS ARE NOT GOODBYES",
-                    "## THE GOLDEN RULE"):
+                    "## THE GOLDEN RULE", "## ENDING THE CALL"):
         assert heading in si, heading
     assert "NEVER call end_call in a turn that asks a question" in si
-    assert "Sir OR Ma'am" not in si                           # no honorific block at all
+    assert "Sir OR Ma'am" in si                               # the honorific rule is back too
 
 
 def test_the_trigger_is_the_opening_and_nothing_more():
@@ -114,29 +118,30 @@ def test_a_nameless_call_never_asks_who_it_is_speaking_to():
     r = _render(guest=None)
     si = r["system_instruction"]
     assert "Am I speaking to" not in si
-    assert "Hello, I'm speaking from Ved and Riya's Hospitality Team." in si
     assert "Sufi Night will start at seven in the evening at The Great Park." in si
     assert "Am I speaking to" not in r["trigger"]
     assert "never invent one" in r["trigger"]
 
 
-def test_the_seed_row_fits_a_short_call():
+def test_the_seed_row():
     s = _seed()
     assert s["requires_event"] == 1
-    assert 0 < s["listen_seconds"] <= 10                      # nothing to wait for after the close
+    assert s["listen_seconds"] >= 12                          # long enough to hear a question
     assert prompt_render.validate_template(s["prompt_template"]) == []
     assert prompt_render.validate_template(s["trigger_template"]) == []
 
 
-def test_the_strict_prompt_is_current_and_the_old_reminder_is_stale():
-    """stale_agent_reasons demanded a schedule placeholder and the escalation block — both
-    absent from a script-only agent by design. A copy of the OLD reminder must still be
-    flagged, or --refresh-agents would leave it speaking the conversational script."""
+def test_the_reminder_is_current_and_the_old_one_is_stale():
+    """stale_agent_reasons demanded a schedule placeholder — absent from a one-function
+    agent by design. A copy of the OLD reminder must still be flagged, or --refresh-agents
+    would leave it speaking the schedule."""
     assert eo_db.stale_agent_reasons(_seed()) == []
     old = ("Then, in the same breath, that you are excited to welcome them and have some "
            "details about this evening. {schedule} SPEAK TO A PERSON")
     assert any("have some details about this evening" in r
                for r in eo_db.stale_agent_reasons({"prompt_template": old}))
+    # one function only, but no escalation block: still stale
+    assert eo_db.stale_agent_reasons({"prompt_template": "## ONE FUNCTION ONLY\nno escalation"})
 
 
 # ------------------------------------------------------------- the next function to start
@@ -166,34 +171,13 @@ def test_next_event_treats_a_naive_clock_as_ist():
     assert prompt_render.next_event(EVENTS, now=datetime(2026, 9, 25, 18, 0))["name"] == "Sufi Night"
 
 
-# ---------------------------------------------------------- the 12:45 test calls, 25 Sep
-def test_no_outcome_before_the_reminder_and_announcements_are_not_the_guest():
-    """Devvrat's call opened on the carrier's "Your call has been forwarded"; the model
-    recorded an outcome on it, the bridge's mute-record nudge asked for "your ONE short
-    closing", and the guest heard "Looking forward to seeing you" with no reminder."""
-    si = _render()["system_instruction"]
-    assert "Never call record_outcome before you have said THE REMINDER" in si
-    assert "your call has been forwarded" in si
-    assert "that is the network, not the guest" in si
-
-
-def test_a_question_is_written_into_the_note_for_the_team():
-    """"remark bhi nahi le raha": the team must know WHAT to get back to them on."""
-    si = _render()["system_instruction"]
-    assert "with their question in the note" in si
-    assert "asked about the food" in si
-
-
-def test_exactly_means_the_same_words_in_the_guests_language():
-    """A Gujarati guest got the whole script in English: "say EXACTLY" was read as "in
-    English"."""
-    si = _render()["system_instruction"]
-    assert "the same words in the guest's language" in si
-
-
-def test_a_call_back_on_the_strict_agent_gets_the_script_not_how_can_i_help():
+# ------------------------------------------------- call-backs: script-only vs conversational
+def test_a_call_back_on_a_script_only_agent_gets_its_script_not_how_can_i_help():
+    """A script-only agent (## STRICT RULES) cannot help with anything, so a call-back is
+    told to greet, thank them and say its script. The shipped reminder is conversational
+    again and keeps the history-aware trigger."""
     import main
-    strict = {"prompt_template": _seed()["prompt_template"]}
+    strict = {"prompt_template": "## STRICT RULES\n- say only the script"}
     history = ("[INBOUND CALL: Devvrat is calling us, and we have ALREADY had this conversation "
                "with them … Thank them warmly for calling and ask how you can help.]")
     t = main._inbound_trigger_for(strict, "Devvrat", "Ved and Riya's Hospitality Team", history)
@@ -204,9 +188,8 @@ def test_a_call_back_on_the_strict_agent_gets_the_script_not_how_can_i_help():
 
     nameless = main._inbound_trigger_for(strict, "", "Ved and Riya's Hospitality Team", "")
     assert "never invent one" in nameless and "Am I speaking" not in nameless
-    assert "THE REMINDER and THE CLOSE" in nameless
 
-    # a conversational agent keeps the history-aware trigger, or none
-    chatty = {"prompt_template": "## WHEN THEY ASK YOU SOMETHING ELSE …"}
-    assert main._inbound_trigger_for(chatty, "Devvrat", "team", history) == history
-    assert main._inbound_trigger_for(chatty, "Devvrat", "team", "") == ""
+    reminder = _seed()
+    assert not eo_db.is_strict_agent(reminder)
+    assert main._inbound_trigger_for(reminder, "Devvrat", "team", history) == history
+    assert main._inbound_trigger_for(reminder, "Devvrat", "team", "") == ""
