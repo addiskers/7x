@@ -311,6 +311,14 @@ def _resolve_call_context(agent_id=None, event_id=None, guest_id=None, wedding_i
             wedding_id = wedding_id or camp.get("wedding_id")
 
         agent = _cached("agent", agent_id, eo_db.get_agent)
+        if agent and not agent.get("active", 1):
+            # Switched off means off on EVERY call path. Campaign creation and cold inbound
+            # calls already refuse an inactive agent, but an existing campaign — and a
+            # call-back to one — resolved its agent by id and kept speaking a script the
+            # operator had turned off (25 Sep: the schedule agent, off, still answered).
+            logger.warning("Call context: agent %r (%s) is switched off; using the seeded fallback",
+                           agent_id, agent.get("slug"))
+            agent = None
         if not agent:
             agent = eo_db.fallback_agent()
             if agent_id:
@@ -737,7 +745,12 @@ async def plivo_answer(request: Request):
     is_inbound = direction == "inbound" and not qp.get("caller")
     trigger = ""
     inbound_agent_id = ""
+    inbound_event_id = ""
     if is_inbound:
+        # The pinned function ("inbound is for the Sufi Night only") applies to EVERY call
+        # that comes in — a call-back to a campaign for another function included; without
+        # this a guest from the afternoon's Hi-Tea campaign who rang back heard the Hi-Tea.
+        inbound_event_id = (os.getenv("EO_INBOUND_EVENT_ID") or "").strip()
         inbound = inbound_context.build(caller)
         caller = inbound.get("phone") or caller
         name = name or inbound.get("name") or ""
@@ -752,13 +765,15 @@ async def plivo_answer(request: Request):
             # by number supplies the name when the guest list has it.
             inbound_agent_id = _inbound_agent_id()
         logger.info(f"Inbound call from {caller}: named={'yes' if name else 'no'}, "
-                    f"campaign={campaign_id or '-'}, agent={inbound_agent_id or 'campaign'}")
+                    f"campaign={campaign_id or '-'}, agent={inbound_agent_id or 'campaign'}, "
+                    f"event={inbound_event_id or 'campaign/next'}")
 
     # Which script this call speaks. Resolved HERE because the prompt is frozen into the
     # Live session at prewarm time, which happens on this webhook — before the media
     # stream exists.
     call_ctx = _resolve_call_context(
-        agent_id=qp.get("agent") or inbound_agent_id or "", event_id=qp.get("event") or "",
+        agent_id=qp.get("agent") or inbound_agent_id or "",
+        event_id=inbound_event_id if is_inbound else (qp.get("event") or ""),
         guest_id=qp.get("guest") or "", wedding_id=qp.get("wedding") or "",
         campaign_id=campaign_id, caller=caller)
     # An inbound call's own trigger (built from call history) wins; otherwise use the

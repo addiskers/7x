@@ -432,3 +432,36 @@ def test_campaign_history_expires_after_a_week(fresh_eo_db, monkeypatch):
     _seed(eo_db, "+919824018001", status="completed", attempts=1,
           last_attempt_at=(real_now - timedelta(days=2)).isoformat(), rsvp_outcome="acknowledged")
     assert inbound_context.build("+919824018001")["campaign_id"] is not None  # 2 days: remembered
+
+
+def test_a_call_back_hears_the_pinned_function_not_the_campaigns(fresh_eo_db, monkeypatch):
+    """"Inbound only for Sufi event too": a guest from the afternoon's Hi-Tea campaign who
+    rings back must hear the Sufi Night when EO_INBOUND_EVENT_ID pins it — the campaign's
+    own function only when nothing is pinned."""
+    import eo_auth
+    import main
+    eo_db = fresh_eo_db
+    wid = _wedding_world(eo_db)
+    sufi = eo_db.list_events(wid)[0]["id"]
+    hi_tea = eo_db.create_event(wid, "Hi-Tea", event_date="2030-01-01", start_time="16:00",
+                                venue="Harvest")
+    owner = [u for u in eo_db.list_users() if u["role"] == "eo_admin"][0]["id"]
+    reminder = eo_db.get_agent_by_slug("event_reminder")
+    cid = eo_db.create_campaign("Hi-Tea — reminder", "2030-01-01T10:00:00+00:00", owner,
+                                4, 3, 1, wedding_id=wid, event_id=hi_tea,
+                                agent_id=reminder["id"], status="completed")
+    eo_db.add_campaign_contacts(cid, [{"id": None, "phone": "+917043020542", "name": "Heeren"}])
+    cc = eo_db._one("SELECT * FROM campaign_contacts WHERE campaign_id = ?", (cid,))
+    eo_db.cc_update(cc["id"], attempts=1, last_attempt_at=_recent(minutes=20), last_error="no answer")
+
+    monkeypatch.delenv("EO_INBOUND_EVENT_ID", raising=False)
+    meta = _answer(monkeypatch, "917043020542")
+    assert meta["campaign_id"] == str(cid)
+    assert meta["ctx"]["event"]["name"] == "Hi-Tea"                # nothing pinned: the campaign's
+
+    monkeypatch.setenv("EO_INBOUND_EVENT_ID", str(sufi))
+    meta = _answer(monkeypatch, "917043020542")
+    assert meta["campaign_id"] == str(cid)                          # still a call-back
+    assert meta["ctx"]["event"]["name"] == "Sufi Night"
+    assert "Sufi Night" in meta["ctx"]["system_instruction"]
+    assert "Hi-Tea" not in meta["ctx"]["system_instruction"]

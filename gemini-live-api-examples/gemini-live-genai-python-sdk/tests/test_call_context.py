@@ -224,6 +224,27 @@ def test_a_pinned_inbound_event_beats_the_next_to_start(wedding_world, monkeypat
     assert ctx["event"]["name"] == "Saanth Ritual"
 
 
+def test_a_switched_off_agent_is_never_spoken_even_by_an_existing_campaign(wedding_world):
+    """"Only one agent": the schedule agent was switched off, yet a call-back to an older
+    campaign that named it still read the whole schedule — get_agent ignored `active`."""
+    w = wedding_world
+    schedule = eo_db.get_agent_by_slug("wedding_schedule")
+    camp = eo_db.create_campaign("Old schedule campaign", "2026-09-21T02:30:00+00:00",
+                                 w["admin"], 4, 3, 1, wedding_id=w["wedding"],
+                                 agent_id=schedule["id"])
+    main.invalidate_ctx_cache()
+    assert main._resolve_call_context(campaign_id=camp)["agent"]["slug"] == "wedding_schedule"
+
+    eo_db.update_agent(schedule["id"], active=0)
+    main.invalidate_ctx_cache()
+    ctx = main._resolve_call_context(campaign_id=camp, caller="+919876543210")
+    assert ctx["agent"]["slug"] == "event_reminder"
+    assert "{upcoming_schedule}" not in ctx["system_instruction"]
+    assert "## ONE FUNCTION ONLY" in ctx["system_instruction"]
+    # by id, the same
+    assert main._resolve_call_context(agent_id=schedule["id"])["agent"]["slug"] == "event_reminder"
+
+
 # ------------------------------------------------------------------------ prewarm safety
 def test_a_prewarmed_session_is_never_handed_to_a_different_call():
     """The session carries one guest's name, hotel and flight number; handing it to

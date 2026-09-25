@@ -209,7 +209,13 @@ What the caller hears:
 - **Unknown number**: the same agent, without a name and without asking "am I speaking
   with…?".
 - **A guest we rang earlier** (a missed call-back): the campaign's own agent, with an opening
-  that says we tried to reach them.
+  that says we tried to reach them. With `EO_INBOUND_EVENT_ID` set, the pinned function
+  replaces the campaign's.
+
+An agent switched **off** on the Agents page is off everywhere: campaigns cannot be created
+on it, cold inbound calls skip it, and an existing campaign (or a call-back to one) that
+still names it falls back to the Event Reminder. Shipped agents cannot be deleted — a
+restart would re-seed them — so "off" is how one is retired.
 
 The inbound agent is `EO_INBOUND_AGENT_SLUG` (code default `wedding_schedule`; the Ved & Riya
 server sets `event_reminder`, the strict script); if that agent is switched off the call falls
