@@ -17,13 +17,17 @@ export default function ContactsTable({
   onToggleMany,        // (ids, checked) => void
   refreshKey = 0,
   onTotal,             // (total) => void
+  weddingId: weddingIdProp,   // optional: a page with its own wedding picker passes it in
 }) {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  const { weddingId } = useWedding()
+  const { weddingId: globalWeddingId } = useWedding()
+  // A page that lets the operator pick a wedding (Contacts) passes it in; otherwise
+  // the list follows the wedding selected in the top bar.
+  const weddingId = weddingIdProp !== undefined ? weddingIdProp : globalWeddingId
   const [q, setQ] = useState('')
   const [source, setSource] = useState('')
   const [status, setStatus] = useState('')

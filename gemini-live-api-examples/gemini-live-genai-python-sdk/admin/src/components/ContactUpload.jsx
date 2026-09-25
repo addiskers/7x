@@ -3,7 +3,7 @@ import { uploadFile, downloadFile } from '../api.js'
 import { IconDownload } from './icons.jsx'
 
 // "Upload Guests" card — drag/drop or click, plus a Download Sample button.
-export default function ContactUpload({ onImported, step, weddingId }) {
+export default function ContactUpload({ onImported, step, weddingId, weddingPicker }) {
   const inputRef = useRef(null)
   const [drag, setDrag] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -12,6 +12,7 @@ export default function ContactUpload({ onImported, step, weddingId }) {
 
   async function handleFile(file) {
     if (!file) return
+    if (!weddingId) { setErr('Pick the wedding this guest list belongs to first.'); return }
     setBusy(true); setErr(''); setMsg(null)
     try {
       const r = await uploadFile('/contacts/import', file, { wedding_id: weddingId })
@@ -39,7 +40,10 @@ export default function ContactUpload({ onImported, step, weddingId }) {
     <div className="card">
       <div className="panel-head">
         <h3>{step ? `${step}. ` : ''}Upload Contacts</h3>
-        <button className="btn ghost sm" onClick={sample} style={{ display: 'flex', gap: 6 }}><IconDownload /> Download Sample</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {weddingPicker}
+          <button className="btn ghost sm" onClick={sample} style={{ display: 'flex', gap: 6 }}><IconDownload /> Download Sample</button>
+        </div>
       </div>
       <div
         className={`dropzone ${drag ? 'drag' : ''}`}

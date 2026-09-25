@@ -455,3 +455,61 @@ def test_a_callback_on_a_completed_campaign_still_rings(monkeypatch):
     first pass finishes."""
     call, dialed = _tick_world(monkeypatch, "completed")
     assert dialed == [("+919773127146", 9, 25)]
+
+
+# --------------------------------------------- guests always land on a wedding (Contacts page)
+# Live: an upload from the Contacts page reported "1 read · 0 added · 1 updated" and the list
+# said "No guests yet". The page sent no wedding, so the row was filed under wedding 0 while
+# the list showed wedding 4. Both writes now require a wedding, and the UI supplies one.
+def _guard_world(db):
+    h, s = eo_auth.hash_password("pw123456")
+    uid = db.create_user(username="boss", name="B", password_hash=h, password_salt=s, role="eo_admin")
+    wid = db.create_wedding("W", created_by=uid)
+    return db.get_user(uid), wid
+
+
+class _Req:
+    def __init__(self, body=None, form=None):
+        self._b, self._f = body or {}, form or {}
+        self.query_params, self.headers, self.client = {}, {}, None
+    async def json(self): return self._b
+    async def form(self): return self._f
+
+
+def test_adding_a_guest_without_a_wedding_is_refused(fresh_eo_db, monkeypatch):
+    import asyncio
+    db = fresh_eo_db
+    db.init()
+    user, wid = _guard_world(db)
+    monkeypatch.setattr(eo_auth, "require_eo", lambda request: user)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(eo_api.contacts_add(_Req({"name": "Nandini", "phone": "+918320286829"})))
+    assert exc.value.status_code == 400 and "wedding" in exc.value.detail.lower()
+    assert db.list_contacts(limit=10)["total"] == 0                       # nothing filed under 0
+
+    asyncio.run(eo_api.contacts_add(_Req({"name": "Nandini", "phone": "+918320286829", "wedding_id": wid})))
+    rows = db.list_contacts(wedding_id=wid, limit=10)["items"]
+    assert [r["name"] for r in rows] == ["Nandini"]                        # visible on ITS wedding
+
+
+def test_uploading_a_guest_list_without_a_wedding_is_refused(fresh_eo_db, monkeypatch):
+    import asyncio, io
+    from openpyxl import Workbook
+    db = fresh_eo_db
+    db.init()
+    user, wid = _guard_world(db)
+    monkeypatch.setattr(eo_auth, "require_eo", lambda request: user)
+    wb = Workbook(); ws = wb.active
+    ws.append(["Name", "Phone"]); ws.append(["Nandini", "+91 83202 86829"])
+    buf = io.BytesIO(); wb.save(buf)
+
+    class _Up:
+        filename = "guests.xlsx"
+        async def read(self): return buf.getvalue()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(eo_api.contacts_import(_Req(form={}), file=_Up()))
+    assert exc.value.status_code == 400
+    r = asyncio.run(eo_api.contacts_import(_Req(form={"wedding_id": str(wid)}), file=_Up()))
+    assert (r["added"], r["updated"]) == (1, 0)
+    assert db.list_contacts(wedding_id=wid, limit=10)["total"] == 1

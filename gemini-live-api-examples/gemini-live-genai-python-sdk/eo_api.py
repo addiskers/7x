@@ -1268,8 +1268,9 @@ async def contacts_add(request: Request):
     if not e164:
         raise HTTPException(status_code=400, detail="Invalid phone number")
     wedding_id = body.get("wedding_id") or None
-    if wedding_id:
-        _wedding_or_404(user, wedding_id)
+    if not wedding_id:
+        raise HTTPException(status_code=400, detail="Pick the wedding this guest belongs to.")
+    _wedding_or_404(user, wedding_id)
     guest = {k: body[k] for k in eo_db.GUEST_FIELDS if k in body}
     if "side" in guest:
         guest["side"] = eo_import.normalize_side(guest["side"])
@@ -1286,8 +1287,11 @@ async def contacts_import(request: Request, file: UploadFile = File(...)):
     user = eo_auth.require_eo(request)
     form = await request.form()
     wedding_id = form.get("wedding_id") or None
-    if wedding_id:
-        _wedding_or_404(user, wedding_id)
+    # A guest list belongs to a wedding. Without one the rows were filed under "no wedding"
+    # (id 0), invisible on every wedding-scoped screen — "1 updated … No guests yet".
+    if not wedding_id:
+        raise HTTPException(status_code=400, detail="Pick the wedding this guest list belongs to.")
+    _wedding_or_404(user, wedding_id)
     data = await file.read()
     try:
         rows, rejected, total, unknown = eo_import.parse_upload(file.filename, data)
