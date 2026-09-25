@@ -1472,3 +1472,80 @@ def test_a_redial_that_goes_dead_is_not_reached_not_another_callback(monkeypatch
     assert 'record "not_reachable"' in redial and '"callback"' not in redial
     (first,) = asyncio.run(run(0))
     assert 'record "callback"' in first
+
+
+# ------------------------------------------------- a session that dies before the opening
+def _collect(b):
+    events = []
+
+    async def on_event(e):
+        events.append(e)
+    b.on_event = on_event
+    return events
+
+
+def _recorded(events):
+    return [e for e in events if e.get("type") == "tool_call" and e.get("name") == "record_outcome"]
+
+
+def test_a_session_error_before_any_agent_audio_is_recorded_not_reached():
+    """25 Sep: the project hit its Gemini spending cap (1011); every call connected Plivo,
+    Gemini refused the session, and the runner filed the guests as DONE with no outcome.
+    A dead session before the agent speaks is a no-answer: not_reachable, so it is retried."""
+    class FakeGemini:
+        async def start_session(self, **kw):
+            yield {"type": "error", "error": "APIError: 1011 spending cap"}
+
+    async def run():
+        b = _bridge()
+        b.gemini = FakeGemini()
+        events = _collect(b)
+        await b._gemini_loop()
+        return b, events
+
+    b, events = asyncio.run(run())
+    (rec,) = _recorded(events)
+    assert rec["result"]["outcome_status"] == "not_reachable"
+    assert "session error" in rec["result"]["note"] and "1011" in rec["result"]["note"]
+    assert b._rsvp_recorded
+
+
+def test_a_connect_failure_is_recorded_the_same_way():
+    """The cap error actually surfaces as an exception out of start_session (the connect
+    itself fails), not as an error event."""
+    class FakeGemini:
+        async def start_session(self, **kw):
+            raise RuntimeError("APIError: 1011 None. Your project has exceeded its monthly spending cap")
+            yield  # pragma: no cover — makes this an async generator
+
+    async def run():
+        b = _bridge()
+        b.gemini = FakeGemini()
+        events = _collect(b)
+        await b._gemini_loop()
+        return b, events
+
+    b, events = asyncio.run(run())
+    (rec,) = _recorded(events)
+    assert rec["result"]["outcome_status"] == "not_reachable"
+    assert "spending cap" in rec["result"]["note"]
+
+
+def test_a_session_error_after_the_agent_spoke_records_nothing():
+    """A real conversation that drops mid-way is not a no-answer; its outcome is the
+    model's (or the operator's) to decide."""
+    class FakeGemini:
+        async def start_session(self, **kw):
+            yield {"type": "gemini", "text": "Hello, I'm speaking from the team."}
+            yield {"type": "error", "error": "receive_loop error: ConnectionClosed"}
+
+    async def run():
+        b = _bridge()
+        b.gemini = FakeGemini()
+        b._agent_audio_started = True
+        events = _collect(b)
+        await b._gemini_loop()
+        return b, events
+
+    b, events = asyncio.run(run())
+    assert _recorded(events) == [] and not b._rsvp_recorded

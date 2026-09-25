@@ -380,6 +380,25 @@ def _resolve_identity(call_id, header_caller, header_name):
     return caller, name
 
 
+def _inbound_trigger_for(agent, name, team, history_trigger):
+    """The opening for a call that comes IN. A conversational agent takes the history-aware
+    trigger from inbound_context ("thanks for calling back — I tried reaching you…", "how
+    can I help?"), or its own opening. A script-only agent cannot help with anything, so it
+    is told to do the one thing it can: greet, thank them for calling, say its script —
+    Devvrat's call-back (25 Sep) was asked "how can I help?" and then could not be helped."""
+    if not eo_db.is_strict_agent(agent):
+        return history_trigger
+    team = team or "the hospitality team"
+    if name:
+        return (f"[INBOUND CALL: {name} is calling us back. Say: \"Hello {name}, I'm speaking from "
+                f"{team} — thanks for calling back.\" Then give THE REMINDER and THE CLOSE exactly as "
+                f"in your script. Do NOT ask who they are and do NOT ask how you can help.]")
+    return (f"[INBOUND CALL: someone is calling our number. You were NOT given their name — never "
+            f"invent one and never ask \"am I speaking to…?\". Say: \"Hello, I'm speaking from {team} "
+            f"— thanks for calling.\" Then give THE REMINDER and THE CLOSE exactly as in your script. "
+            f"Do NOT ask how you can help.]")
+
+
 def _sole_active_wedding_id():
     """The one active wedding, when there is exactly one — the wedding an unknown inbound
     caller must be about. None when there are none or several (never guess between two)."""
@@ -743,6 +762,11 @@ async def plivo_answer(request: Request):
         campaign_id=campaign_id, caller=caller)
     # An inbound call's own trigger (built from call history) wins; otherwise use the
     # agent's rendered opening. Outbound calls previously had no stashed trigger at all.
+    # A script-only agent gets its script either way (see _inbound_trigger_for).
+    if is_inbound:
+        trigger = _inbound_trigger_for(call_ctx.get("agent"), name,
+                                       (call_ctx.get("wedding") or {}).get("hospitality_team"),
+                                       trigger)
     trigger = trigger or call_ctx.get("trigger") or ""
     if call_ctx.get("missing"):
         logger.warning("Call %s: agent=%s has unresolved placeholders %s",

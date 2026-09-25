@@ -405,6 +405,11 @@ _REQUIRED_FRAGMENTS = (
 )
 
 
+def is_strict_agent(agent) -> bool:
+    """A script-only agent (see _STRICT_MARKER): says its lines and answers nothing."""
+    return _STRICT_MARKER in ((agent or {}).get("prompt_template") or "")
+
+
 def stale_agent_reasons(agent) -> list:
     """Why this agent's prompt looks out of date. Empty list = current.
 

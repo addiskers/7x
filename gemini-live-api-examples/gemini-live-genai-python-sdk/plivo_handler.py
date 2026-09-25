@@ -1379,15 +1379,30 @@ class PlivoMediaBridge:
         self._greeting_stalled = True
         logger.error(f"GREETING STALL: no agent audio {waited_s:.0f}s after the opening trigger and "
                      f"{self._greeting_nudges} push(es); recording not_reachable and hanging up")
-        note = "agent never spoke (session stall)"
-        result = {"success": True, "silent": True, "outcome_status": "not_reachable",
+        await self._record_bridge_outcome("not_reachable", "agent never spoke (session stall)")
+        self._lock_abort_budget("greeting stall")     # the caller's "hello?" must not keep a dead line up
+        self._schedule_end(mute=True)
+
+    async def _record_bridge_outcome(self, status: str, note: str):
+        """Record an outcome on the model's behalf, through the same tool event its own
+        record_outcome takes, so the call log and the campaign runner see it the usual way."""
+        result = {"success": True, "silent": True, "outcome_status": status,
                   "callback_time_text": "", "callback_time_iso": "", "do_not_contact": False,
                   "guest_name": "", "note": note, "outcome_extra": {}}
         await self._emit({"type": "tool_call", "name": "record_outcome", "by": "bridge",
-                          "args": {"outcome_status": "not_reachable", "note": note}, "result": result})
+                          "args": {"outcome_status": status, "note": note}, "result": result})
         self._rsvp_recorded = True
-        self._lock_abort_budget("greeting stall")     # the caller's "hello?" must not keep a dead line up
-        self._schedule_end(mute=True)
+
+    async def _mark_dead_session(self, reason: str):
+        """The Gemini session failed. If the agent never got a word out, the guest heard the
+        melody and a click: record not_reachable so the campaign redials, instead of filing
+        the call as done with no outcome — which is what happened to three guests when the
+        project hit its spending cap (1011) on 25 Sep. After the agent has spoken, the call
+        was a real conversation and its outcome is left to the model / the operator."""
+        if self._agent_audio_started or self._rsvp_recorded:
+            return
+        await self._record_bridge_outcome(
+            "not_reachable", f"agent never spoke (session error: {str(reason)[:120]})")
 
     async def _on_rsvp_recorded(self, result):
         """record_outcome fired: arm the post-closing soft hangup and keep the closing
@@ -1770,6 +1785,7 @@ class PlivoMediaBridge:
                     etype = event.get("type")
                     if etype == "error":
                         logger.error(f"Gemini error during Plivo call: {event}")
+                        await self._mark_dead_session(event.get("error") or "error")
                         break
                     # Feed the idle-hangup guard: mark the task done + stamp any activity.
                     if etype == "tool_call" and event.get("name") == "record_outcome":
@@ -1845,6 +1861,10 @@ class PlivoMediaBridge:
             raise                          # caller hung up: let the generator finally close the session
         except Exception as e:
             logger.error(f"Gemini session error: {e}")
+            try:
+                await self._mark_dead_session(e)
+            except Exception:
+                logger.debug("could not record the dead session", exc_info=True)
 
     async def run(self):
         """Run the bridge: Plivo <-> Gemini.

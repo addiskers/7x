@@ -164,3 +164,49 @@ def test_next_event_orders_by_time_and_survives_bad_rows():
 
 def test_next_event_treats_a_naive_clock_as_ist():
     assert prompt_render.next_event(EVENTS, now=datetime(2026, 9, 25, 18, 0))["name"] == "Sufi Night"
+
+
+# ---------------------------------------------------------- the 12:45 test calls, 25 Sep
+def test_no_outcome_before_the_reminder_and_announcements_are_not_the_guest():
+    """Devvrat's call opened on the carrier's "Your call has been forwarded"; the model
+    recorded an outcome on it, the bridge's mute-record nudge asked for "your ONE short
+    closing", and the guest heard "Looking forward to seeing you" with no reminder."""
+    si = _render()["system_instruction"]
+    assert "Never call record_outcome before you have said THE REMINDER" in si
+    assert "your call has been forwarded" in si
+    assert "that is the network, not the guest" in si
+
+
+def test_a_question_is_written_into_the_note_for_the_team():
+    """"remark bhi nahi le raha": the team must know WHAT to get back to them on."""
+    si = _render()["system_instruction"]
+    assert "with their question in the note" in si
+    assert "asked about the food" in si
+
+
+def test_exactly_means_the_same_words_in_the_guests_language():
+    """A Gujarati guest got the whole script in English: "say EXACTLY" was read as "in
+    English"."""
+    si = _render()["system_instruction"]
+    assert "the same words in the guest's language" in si
+
+
+def test_a_call_back_on_the_strict_agent_gets_the_script_not_how_can_i_help():
+    import main
+    strict = {"prompt_template": _seed()["prompt_template"]}
+    history = ("[INBOUND CALL: Devvrat is calling us, and we have ALREADY had this conversation "
+               "with them … Thank them warmly for calling and ask how you can help.]")
+    t = main._inbound_trigger_for(strict, "Devvrat", "Ved and Riya's Hospitality Team", history)
+    assert t != history
+    assert "Hello Devvrat, I'm speaking from Ved and Riya's Hospitality Team" in t
+    assert "THE REMINDER and THE CLOSE" in t
+    assert "Do NOT ask who they are and do NOT ask how you can help" in t
+
+    nameless = main._inbound_trigger_for(strict, "", "Ved and Riya's Hospitality Team", "")
+    assert "never invent one" in nameless and "Am I speaking" not in nameless
+    assert "THE REMINDER and THE CLOSE" in nameless
+
+    # a conversational agent keeps the history-aware trigger, or none
+    chatty = {"prompt_template": "## WHEN THEY ASK YOU SOMETHING ELSE …"}
+    assert main._inbound_trigger_for(chatty, "Devvrat", "team", history) == history
+    assert main._inbound_trigger_for(chatty, "Devvrat", "team", "") == ""
