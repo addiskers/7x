@@ -10,6 +10,7 @@ Idempotent — re-running updates the same wedding and events rather than duplic
 """
 
 import argparse
+import os
 import sys
 
 # --preview prints a rendered script, and those now contain Devanagari and Gujarati
@@ -387,14 +388,17 @@ def preview_reminder(wedding_id=None, event_id=None):
         raise SystemExit("The Event Reminder agent is not in this database yet — restart the "
                          "app once so it is seeded, or run --refresh-agents.")
     events = eo_db.list_events(wedding["id"])
-    event = eo_db.get_event(int(event_id)) if event_id else prompt_render.next_event(events)
+    event = (eo_db.get_event(int(event_id)) if event_id
+             else prompt_render.inbound_event(events, pinned_id=os.getenv("EO_INBOUND_EVENT_ID")))
     if not event:
         raise SystemExit("This wedding has no functions; run --set-events first.")
     guests = eo_db.list_contacts(wedding_id=wedding["id"], limit=1)["items"]
     r = prompt_render.render_prompt(agent, wedding=wedding, event=event,
                                     guest=guests[0] if guests else None, events=events)
-    print(f"Wedding #{wedding['id']} '{wedding['name']}' — function #{event['id']} "
-          f"'{event['name']}'" + ("" if event_id else " (next to start)"))
+    how = ("" if event_id else
+           " (pinned by EO_INBOUND_EVENT_ID)" if os.getenv("EO_INBOUND_EVENT_ID") else
+           " (next to start)")
+    print(f"Wedding #{wedding['id']} '{wedding['name']}' — function #{event['id']} '{event['name']}'{how}")
     print("=" * 70)
     print(r["system_instruction"])
     print("=" * 70)

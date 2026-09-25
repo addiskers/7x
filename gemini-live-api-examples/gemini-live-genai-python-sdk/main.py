@@ -346,10 +346,11 @@ def _resolve_call_context(agent_id=None, event_id=None, guest_id=None, wedding_i
         events = _cached("events", wid, eo_db.list_events) if wid else None
 
         # A one-function agent with no function named — a cold inbound call, or a campaign
-        # saved without one — is about the next function to start. Without this the strict
-        # reminder would read "will start at at" to a guest who rang us.
+        # saved without one — is about the pinned function (EO_INBOUND_EVENT_ID) or, failing
+        # that, the next one to start. Without this the reminder would read "will start at
+        # at" to a guest who rang us.
         if not event and (agent or {}).get("requires_event") and events:
-            event = prompt_render.next_event(events)
+            event = prompt_render.inbound_event(events, pinned_id=os.getenv("EO_INBOUND_EVENT_ID"))
             ctx["event"] = event
 
         rendered = prompt_render.render_prompt(

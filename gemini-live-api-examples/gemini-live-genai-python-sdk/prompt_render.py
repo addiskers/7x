@@ -328,6 +328,20 @@ def next_event(events, *, now=None):
     return dated[-1][1]
 
 
+def inbound_event(events, *, pinned_id=None, now=None):
+    """The function a call with no function named is about: the pinned one when the
+    operator has set it (EO_INBOUND_EVENT_ID — "inbound is for the Sufi Night only, all
+    day"), else the next one to start (next_event)."""
+    pinned = str(pinned_id or "").strip()
+    if pinned:
+        for e in events or []:
+            if str(e.get("id")) == pinned:
+                return e
+        logger.warning("inbound_event: pinned event %r is not one of this wedding's functions; "
+                       "falling back to the next to start", pinned)
+    return next_event(events, now=now)
+
+
 def _count_words(n):
     return _ONES[n] if 0 < n < len(_ONES) else str(n)
 

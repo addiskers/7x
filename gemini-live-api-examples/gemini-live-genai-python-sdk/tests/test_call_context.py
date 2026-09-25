@@ -203,6 +203,27 @@ def test_a_one_function_agent_with_no_function_gets_the_next_to_start(wedding_wo
     assert "Saanth Ritual" not in si
 
 
+def test_a_pinned_inbound_event_beats_the_next_to_start(wedding_world, monkeypatch):
+    """"Inbound only for Sufi event too": EO_INBOUND_EVENT_ID names the function every
+    call with no function is about, whatever the clock says."""
+    import prompt_render
+    w = wedding_world
+    monkeypatch.setattr(prompt_render, "next_event",
+                        lambda events, now=None: next(e for e in events if e["name"] == "Saanth Ritual"))
+    monkeypatch.setenv("EO_INBOUND_EVENT_ID", str(w["ghazal"]))
+    main.invalidate_ctx_cache()
+    ctx = main._resolve_call_context(agent_id=w["agent"]["id"], wedding_id=w["wedding"],
+                                     caller="+919876543210")
+    assert ctx["event"]["name"] == "Ghazal Night"
+
+    # an id that is not one of this wedding's functions falls back to the next to start
+    monkeypatch.setenv("EO_INBOUND_EVENT_ID", "999999")
+    main.invalidate_ctx_cache()
+    ctx = main._resolve_call_context(agent_id=w["agent"]["id"], wedding_id=w["wedding"],
+                                     caller="+919876543210")
+    assert ctx["event"]["name"] == "Saanth Ritual"
+
+
 # ------------------------------------------------------------------------ prewarm safety
 def test_a_prewarmed_session_is_never_handed_to_a_different_call():
     """The session carries one guest's name, hotel and flight number; handing it to
