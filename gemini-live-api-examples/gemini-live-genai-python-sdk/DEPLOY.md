@@ -203,13 +203,41 @@ Answer URL is that address, with **Hangup URL** left blank). Do this for **both*
 What the caller hears:
 
 - **Known guest** (their number is on a wedding's guest list): the inbound agent greets them
-  by first name and gives the schedule, exactly as on an outbound call.
+  by first name and delivers its script, exactly as on an outbound call. On a one-function
+  agent (the strict reminder) that is the next function to start — never one already under
+  way, so nobody hears about the Hi-Tea at six in the evening.
 - **Unknown number**: the same agent, without a name and without asking "am I speaking
   with…?".
 - **A guest we rang earlier** (a missed call-back): the campaign's own agent, with an opening
   that says we tried to reach them.
 
-The inbound agent is `EO_INBOUND_AGENT_SLUG` (default `wedding_schedule`); if that agent is
-switched off the call falls back to the shipped reminder agent. Plivo delivers the caller's
+The inbound agent is `EO_INBOUND_AGENT_SLUG` (code default `wedding_schedule`; the Ved & Riya
+server sets `event_reminder`, the strict script); if that agent is switched off the call falls
+back to the shipped reminder agent. Plivo delivers the caller's
 number in several shapes — `917043020542`, `+917043020542`, `7043020542`, `07043020542` — and
 all of them match the same guest.
+
+## The strict reminder campaign (one function, three lines)
+
+The Event Reminder Specialist speaks the family's script and nothing else: "Hello, I'm
+speaking from <team>. Am I speaking to <name>?" → "I just wanted to inform you that
+<function> will start at <time> at <venue>." → "Looking forward to seeing you." It names no
+other function, answers no question (one fixed line, then the sign-off) and speaks English,
+Hindi or Gujarati only.
+
+After a deploy that changes `agent_seeds.py`:
+
+```
+python seed_demo_wedding.py --refresh-agents          # updates the shipped global rows
+python seed_demo_wedding.py --preview reminder        # read the script for the next function
+python seed_demo_wedding.py --preview reminder --event <id>
+```
+
+A per-wedding copy of the OLD reminder is reported as stale ("still says 'have some details
+about this evening'"); `--force-all` rewrites it, or delete it in the Agents tab.
+
+Server `.env` for a strict-script campaign: `EO_INBOUND_AGENT_SLUG=event_reminder`,
+`EO_TRANSCRIBE_LANGUAGE_HINTS=en-IN,hi-IN,gu-IN`, `EO_UNANSWERED_REPLY_SECONDS=1.5`,
+`EO_TURN_EXPIRE_SECONDS=2`, `EO_GREETING_NUDGE_MAX=3`, `EO_CONNECT_TONE_MAX_S=12`. Then
+`docker compose up -d`. In the Agents tab switch the other agents off; create the campaign on
+the Event Reminder Specialist with the function selected.

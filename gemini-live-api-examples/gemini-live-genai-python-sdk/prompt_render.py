@@ -299,6 +299,35 @@ def upcoming_events(events, *, side=None, today=None):
     return out
 
 
+def next_event(events, *, now=None):
+    """The function a call with NO function named is about: the first one that has not
+    started yet (date + start_time, IST), else the last one on the list.
+
+    A cold inbound call on a one-function agent needs exactly one function, and at six
+    in the evening on the wedding day that is the seven-o'clock function — not the
+    four-o'clock one already under way, which the family asked never to be mentioned."""
+    now = now or datetime.now(_IST)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_IST)
+    dated = []
+    for e in events or []:
+        d = _as_date(e.get("event_date"))
+        if not d:
+            continue
+        m = re.match(r"^(\d{1,2})[:.](\d{2})", str(e.get("start_time") or "").strip())
+        hh, mm = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            hh, mm = 0, 0
+        dated.append((datetime(d.year, d.month, d.day, hh, mm, tzinfo=_IST), e))
+    if not dated:
+        return events[-1] if events else None
+    dated.sort(key=lambda pair: pair[0])
+    for start, e in dated:
+        if start >= now:
+            return e
+    return dated[-1][1]
+
+
 def _count_words(n):
     return _ONES[n] if 0 < n < len(_ONES) else str(n)
 

@@ -391,7 +391,12 @@ def schema_version() -> int:
 # the EO build this platform was converted from; the rest are sections every current agent
 # must carry. A row missing them predates a fix and is still speaking the old script.
 _STALE_MARKERS = ("EO Gujarat", "Raj Goodman", "AI First Mindset", "DoubleTree",
-                  "Sir or Ma'am, am I speaking")
+                  "Sir or Ma'am, am I speaking",
+                  # the conversational reminder the strict script replaced (25 Sep 2026)
+                  "have some details about this evening")
+# A script-only agent (the strict reminder) answers nothing by design: the fragments a
+# conversational agent must carry do not apply to it.
+_STRICT_MARKER = "## STRICT RULES"
 _REQUIRED_FRAGMENTS = (
     # Either the lookup list or the detailed walk-through counts: both give the agent
     # every function, which is what "kisi or event ki details nahi de raha" was about.
@@ -410,8 +415,9 @@ def stale_agent_reasons(agent) -> list:
     if not text:
         return []
     reasons = [f"still says '{m}'" for m in _STALE_MARKERS if m in text]
-    reasons += [why for frags, why in _REQUIRED_FRAGMENTS
-                if not any(f in text for f in frags)]
+    if _STRICT_MARKER not in text:
+        reasons += [why for frags, why in _REQUIRED_FRAGMENTS
+                    if not any(f in text for f in frags)]
     return reasons
 
 

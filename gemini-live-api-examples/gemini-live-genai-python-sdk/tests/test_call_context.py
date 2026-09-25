@@ -89,15 +89,14 @@ def test_the_rendered_prompt_carries_this_events_facts(wedding_world):
     assert "The Imperial Ballroom" in si
     assert "half past ten in the morning" in si      # spoken, never digits
     assert "10:30" not in si
-    assert "the groom's side" in si
+    assert "Rajesh" in si
 
 
 def test_two_events_produce_two_different_prompts(wedding_world):
     """The whole point of the rebuild: one agent, many events.
 
-    Both prompts now carry the FULL schedule — the agent must be able to answer "and what
-    time is the Mehendi?" — so the difference is in which event each call is ABOUT, not in
-    which events it has heard of."""
+    Each prompt is about ONE function and, on the strict script (25 Sep 2026), carries no
+    other: the difference between two calls is the function, and nothing leaks across."""
     w = wedding_world
     saanth = main._resolve_call_context(agent_id=w["agent"]["id"], event_id=w["saanth"],
                                         wedding_id=w["wedding"])["system_instruction"]
@@ -114,8 +113,8 @@ def test_two_events_produce_two_different_prompts(wedding_world):
     assert "Ghazal Night" in about(ghazal) and "Saanth Ritual" not in about(ghazal)
     assert "seven in the evening" in ghazal
 
-    # ...and each still knows the other function, so a guest question has an answer.
-    assert "Ghazal Night" in saanth and "Saanth Ritual" in ghazal
+    # ...and neither knows the other function at all — "Do not mention Hi tea (Strictly)".
+    assert "Ghazal Night" not in saanth and "Saanth Ritual" not in ghazal
 
 
 def test_the_campaign_row_backfills_missing_params(wedding_world):
@@ -178,6 +177,30 @@ def test_a_logistics_campaign_needs_no_event(wedding_world):
     assert ctx["event"] is None
     assert "AI 456" in ctx["system_instruction"]                 # the guest's flight
     assert "Kapoor & Chopra Family Welcomes You" in ctx["system_instruction"]
+
+
+def test_a_one_function_agent_with_no_function_gets_the_next_to_start(wedding_world, monkeypatch):
+    """A cold inbound call (or a campaign saved without a function) on the strict reminder:
+    without a function the script would read "will start at at". The next function to start
+    is what such a call is about; WHICH one is prompt_render.next_event's decision (tested
+    with a fixed clock in test_strict_reminder.py) — this checks the wiring."""
+    import prompt_render
+    w = wedding_world
+    picked = {}
+
+    def fake_next(events, now=None):
+        picked["names"] = [e["name"] for e in events]
+        return next(e for e in events if e["name"] == "Ghazal Night")
+
+    monkeypatch.setattr(prompt_render, "next_event", fake_next)
+    main.invalidate_ctx_cache()
+    ctx = main._resolve_call_context(agent_id=w["agent"]["id"], wedding_id=w["wedding"],
+                                     caller="+919876543210")
+    assert picked["names"] == ["Ghazal Night", "Saanth Ritual"]
+    assert ctx["event"]["name"] == "Ghazal Night"
+    si = ctx["system_instruction"]
+    assert "Ghazal Night will start at seven in the evening at Infinity Terrace" in si
+    assert "Saanth Ritual" not in si
 
 
 # ------------------------------------------------------------------------ prewarm safety

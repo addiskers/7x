@@ -198,11 +198,31 @@ def _script_language(text: str):
 
 
 def _script_share(text: str, lang: str) -> tuple:
-    """(characters in `lang`'s script, Latin letters) in `text`."""
+    """(characters in `lang`'s script, characters in any OTHER script — Latin letters or
+    another Indic range) in `text`. A Gujarati guest answered in Devanagari is as wrong as
+    one answered in English, and only the second used to count."""
     rng = next(((lo, hi) for lo, hi, name in _SCRIPT_LANGUAGES if name == lang), None)
-    own = sum(1 for ch in text or "" if rng and rng[0] <= ch <= rng[1])
-    latin = sum(1 for ch in text or "" if "a" <= ch.lower() <= "z")
-    return own, latin
+    own = other = 0
+    for ch in text or "":
+        if rng and rng[0] <= ch <= rng[1]:
+            own += 1
+        elif "a" <= ch.lower() <= "z" or any(lo <= ch <= hi for lo, hi, _ in _SCRIPT_LANGUAGES):
+            other += 1
+    return own, other
+
+
+def _dominant_script(text: str) -> str:
+    """The language name the bulk of `text`'s letters point to ("English" for Latin)."""
+    counts = {"English": 0}
+    for ch in text or "":
+        if "a" <= ch.lower() <= "z":
+            counts["English"] += 1
+            continue
+        for lo, hi, lang in _SCRIPT_LANGUAGES:
+            if lo <= ch <= hi:
+                counts[lang] = counts.get(lang, 0) + 1
+                break
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
 def _looks_like_goodbye(text: str) -> bool:
@@ -582,7 +602,9 @@ class PlivoMediaBridge:
         self._silence_wrapup_at = 0.0            # when the wrap-up nudge was injected (0 = not yet)
         self._soft_end_at = 0.0                  # when a NON-muting hangup was scheduled (0 = none)
         self._greeting_sent_at = 0.0             # when the opening trigger was queued (0 = not yet)
-        self._greeting_nudged = False            # the speak-NOW watchdog push was already sent
+        self._greeting_nudges = 0                # speak-NOW watchdog pushes sent so far (EO_GREETING_NUDGE_MAX)
+        self._greeting_nudge_at = 0.0            # when the last push went out
+        self._greeting_stalled = False           # every push failed: recorded not_reachable, hanging up
         self._reply_nudged = False               # missed-reply rescue sent for the current unanswered spell
         self._any_turn_complete = False          # a model turn fully completed at least once this call
         self._greeting_rescued = False           # once-per-call: opening re-sent after a pre-speech interrupt
@@ -696,9 +718,12 @@ class PlivoMediaBridge:
         music-box melody, so they never hear dead air. Loops the phrase until the agent starts
         speaking or a safety cap elapses (in case Gemini never produces audio)."""
         try:
-            cap_s = min(float(os.getenv("EO_CONNECT_TONE_MAX_S", "8")), 15.0)
+            # Default 12s, cap 20s: long enough to cover the greeting watchdog's pushes
+            # (EO_GREETING_NUDGE_SECONDS x EO_GREETING_NUDGE_MAX) — a stalled opening used to
+            # go from melody to dead air at 8s, and a tester sat through 20s of nothing.
+            cap_s = min(float(os.getenv("EO_CONNECT_TONE_MAX_S", "12")), 20.0)
         except ValueError:
-            cap_s = 8.0
+            cap_s = 12.0
         frames = _hold_music_frames()
         started = time.monotonic()
         i = 0
@@ -1210,21 +1235,36 @@ class PlivoMediaBridge:
         nudge_max = int(_cfg("EO_SILENCE_NUDGE_MAX", 2))
         nudge_cooldown = _cfg("EO_SILENCE_NUDGE_COOLDOWN_S", 15.0)
         greet_nudge_s = _cfg("EO_GREETING_NUDGE_SECONDS", 4.0)
+        greet_nudge_max = int(_cfg("EO_GREETING_NUDGE_MAX", 3))        # pushes before giving the call up
+        turn_expire_s = _cfg("EO_TURN_EXPIRE_SECONDS", 3.0)           # open turn with no audio/text = over
         reply_rescue_s = _cfg("EO_UNANSWERED_REPLY_SECONDS", 2.5)    # caller finished, no reply yet
         deaf_rescue_s = _cfg("EO_DEAF_RESCUE_SECONDS", 6.0)           # caller keeps voicing, agent mute
         try:
             while True:
                 await asyncio.sleep(1.0)
                 now = time.monotonic()
-                # Greeting watchdog: Gemini occasionally stalls 5-7s on the opening line; one firm push after ~4s almost always unsticks it.
-                if (not self._agent_audio_started and not self._greeting_nudged
-                        and self._greeting_sent_at > 0.0
-                        and now - self._greeting_sent_at >= greet_nudge_s):
-                    self._greeting_nudged = True
-                    logger.info(f"Greeting not spoken after {now - self._greeting_sent_at:.1f}s; "
-                                f"pushing the agent to speak")
-                    await self.text_input_queue.put(
-                        "[Speak your opening line NOW — the member is waiting on a silent line.]")
+                # Greeting watchdog: Gemini occasionally stalls on the opening line. One firm push
+                # after ~4s almost always unsticks it — but not always: a tester said "hello"
+                # into 20s of silence, because the single push had no follow-up and every other
+                # rescue waits for agent audio. So the push repeats every interval, up to
+                # EO_GREETING_NUDGE_MAX times, and then the call is given up as not reached:
+                # the campaign redials later instead of filing a call nobody heard as done.
+                if (not self._agent_audio_started and self._greeting_sent_at > 0.0
+                        and greet_nudge_max > 0 and not self._greeting_stalled):
+                    since = now - max(self._greeting_sent_at, self._greeting_nudge_at)
+                    if since >= greet_nudge_s:
+                        if self._greeting_nudges < greet_nudge_max:
+                            self._greeting_nudges += 1
+                            self._greeting_nudge_at = now
+                            logger.info(f"Greeting not spoken after {now - self._greeting_sent_at:.1f}s; "
+                                        f"pushing the agent to speak ({self._greeting_nudges}/{greet_nudge_max})")
+                            await self.text_input_queue.put(
+                                "[Speak your opening line NOW — the member is waiting on a silent line.]"
+                                if self._greeting_nudges == 1 else
+                                "[Still nothing has been heard from you. Say your opening line NOW, "
+                                "one short sentence.]")
+                        else:
+                            await self._give_up_silent_greeting(now - self._greeting_sent_at)
                     continue
                 if self._pending_hangup_task and not self._pending_hangup_task.done():
                     continue                       # already ending
@@ -1233,10 +1273,10 @@ class PlivoMediaBridge:
                 # MUTUAL silence: activity events (text, turns, caller voice) AND agent PLAYOUT — a long turn's text
                 # ends seconds before its audio does, so every idle timer keys on the later of the two.
                 quiet_for = now - max(self._last_activity, self._last_agent_audio, self._last_caller_audio)
-                # turn_complete may never come (text-triggered greeting / unregistered caller turn) — self-expire the turn after 3s of agent silence with a drained queue, or the nudge ladder stays muzzled.
+                # turn_complete may never come (text-triggered greeting / unregistered caller turn) — self-expire the turn after EO_TURN_EXPIRE_SECONDS of agent silence with a drained queue, or the nudge ladder stays muzzled.
                 agent_quiet = (self._out_frames.empty() and not self._residual
                                and (not self._turn_open
-                                    or now - self._last_agent_audio >= 3.0))
+                                    or now - self._last_agent_audio >= turn_expire_s))
                 if self._rsvp_recorded and agent_quiet and quiet_for >= post_rsvp:
                     logger.info(f"Quiet {quiet_for:.0f}s after RSVP (mutual silence, agent drained); scheduling hangup")
                     # after a voice-aborted goodbye with no transcript ever arriving: end muted, never re-greet
@@ -1244,7 +1284,7 @@ class PlivoMediaBridge:
                     continue
                 # Never nudge while the model is still streaming this turn's text (its audio may simply be lagging
                 # or it was told to finish a cut sentence) — the ladder is for MUTUAL silence, not a slow turn.
-                if ((self._turn_open and now - self._last_gemini_text_at < 3.0)
+                if ((self._turn_open and now - self._last_gemini_text_at < turn_expire_s)
                         or (self._resume_task and not self._resume_task.done())):
                     continue
                 if nudge_on and not self._rsvp_recorded and not self._wrapping_up and self._agent_audio_started \
@@ -1296,10 +1336,14 @@ class PlivoMediaBridge:
                             and self._last_caller_audio < self._silence_nudge_at
                             and now - self._silence_nudge_at >= nudge_y):
                         self._silence_wrapup_at = now
-                        logger.info("Still silent after the nudge; asking the agent to wrap up")
+                        # On a callback redial (generation >= 1) a dead line is "not reached", never
+                        # another "callback" — that re-queued the same dead call (Apeksha, 25 Sep).
+                        dead_outcome = "not_reachable" if self.generation >= 1 else "callback"
+                        logger.info(f"Still silent after the nudge; asking the agent to wrap up "
+                                    f"(outcome {dead_outcome}, gen={self.generation})")
                         await self.text_input_queue.put(
                             "[Still no reply — the line seems dead: no voice heard from the member since your "
-                            "check-in. If no outcome is recorded yet, record \"callback\" with the note "
+                            f"check-in. If no outcome is recorded yet, record \"{dead_outcome}\" with the note "
                             "\"no reply after silence check\". Then give ONE short warm goodbye and call end_call.]")
                         continue
                     if (self._silence_wrapup_at
@@ -1326,6 +1370,24 @@ class PlivoMediaBridge:
                     self._schedule_end(mute=self._wrapping_up)
         except asyncio.CancelledError:
             pass
+
+    async def _give_up_silent_greeting(self, waited_s: float):
+        """The model never produced its opening despite every push: the guest has heard the
+        connect melody and then nothing. Record the call as not reached — the campaign runner
+        treats that as a no-answer and redials later — and hang up. Recorded through the same
+        tool event the model's own record_outcome takes, so the call log shows why."""
+        self._greeting_stalled = True
+        logger.error(f"GREETING STALL: no agent audio {waited_s:.0f}s after the opening trigger and "
+                     f"{self._greeting_nudges} push(es); recording not_reachable and hanging up")
+        note = "agent never spoke (session stall)"
+        result = {"success": True, "silent": True, "outcome_status": "not_reachable",
+                  "callback_time_text": "", "callback_time_iso": "", "do_not_contact": False,
+                  "guest_name": "", "note": note, "outcome_extra": {}}
+        await self._emit({"type": "tool_call", "name": "record_outcome", "by": "bridge",
+                          "args": {"outcome_status": "not_reachable", "note": note}, "result": result})
+        self._rsvp_recorded = True
+        self._lock_abort_budget("greeting stall")     # the caller's "hello?" must not keep a dead line up
+        self._schedule_end(mute=True)
 
     async def _on_rsvp_recorded(self, result):
         """record_outcome fired: arm the post-closing soft hangup and keep the closing
@@ -1582,26 +1644,28 @@ class PlivoMediaBridge:
 
     async def _maybe_language_nudge(self):
         """The guest's first reply came back in a non-Latin script (e.g. "हां, बोलो") and the
-        agent is now answering: if it has switched, stand down; if it is plainly still in
-        English, prompt it ONCE. The prompt tells the model to follow the first reply, and a
+        agent is now answering: if it has switched, stand down; if it is plainly in another
+        language — English, or the wrong Indic one (a Gujarati guest answered in Hindi, 25
+        Sep) — prompt it ONCE. The prompt tells the model to follow the first reply, and a
         tester still got the whole schedule in English — this makes that switch dependable.
         Worded as a check, not an order: an English sentence has come back in Devanagari
         before, and only the model hears the audio."""
         lang = self._reply_language
-        own, latin = _script_share(self._post_reply_agent_text, lang)
+        own, other = _script_share(self._post_reply_agent_text, lang)
         if own >= 3:
             self._reply_language = None          # it is already speaking that language
             return
-        if latin < 20:
+        if other < 20:
             return                               # too little said yet to tell
+        heard = _dominant_script(self._post_reply_agent_text)
         self._language_nudged = True
-        logger.info(f"Guest's first reply looked like {lang} but the agent is answering in English; "
+        logger.info(f"Guest's first reply looked like {lang} but the agent is answering in {heard}; "
                     f"prompting it to switch")
         await self.text_input_queue.put(
-            f"[The guest's first reply looked like {lang}. If that is what they are speaking, switch "
-            f"to it NOW and stay in it for the whole call — carry on from where you are, do not start "
-            f"over or repeat what you already said. If they were actually speaking English, ignore "
-            f"this and stay in English.]")
+            f"[The guest's first reply looked like {lang}, but you are answering in {heard}. If {lang} "
+            f"is what they are speaking, switch to it NOW and stay in it for the whole call — carry on "
+            f"from where you are, do not start over or repeat what you already said. If they were "
+            f"actually speaking {heard}, ignore this and stay in {heard}.]")
 
     async def _on_caller_text(self, text: str):
         """A caller transcription ("user" event): line-trouble and end-of-call decisions."""

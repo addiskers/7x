@@ -159,8 +159,10 @@ def test_force_all_repairs_a_stale_copy_whatever_its_slug(fresh_eo_db, slug):
 
     seed_demo_wedding.refresh_agents(force_all=True)
 
+    import agent_seeds
+    shipped = next(s for s in agent_seeds.SEEDS if s["slug"] == "event_reminder")
     assert db.stale_agent_reasons(db.get_agent(aid)) == []
-    assert "SPEAK TO A PERSON" in db.get_agent(aid)["prompt_template"]
+    assert db.get_agent(aid)["prompt_template"] == shipped["prompt_template"]
 
 
 def test_a_copy_of_unknown_origin_is_left_alone(fresh_eo_db):

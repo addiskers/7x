@@ -369,6 +369,40 @@ def preview_schedule(wedding_id=None):
         print("\nMISSING (blank in the data, left out of the prompt):", r["missing"])
 
 
+def preview_reminder(wedding_id=None, event_id=None):
+    """Render the strict Event Reminder for one function, exactly as tonight's campaign
+    call (or a cold inbound call, which picks the next function to start) would hear it.
+    Read-only."""
+    eo_db.init()
+    weddings = eo_db.list_weddings()
+    if wedding_id:
+        wedding = eo_db.get_wedding(int(wedding_id))
+    else:
+        wedding = (next((w for w in weddings if w["name"] == WEDDING_NAME), None)
+                   or (weddings[0] if weddings else None))
+    if not wedding:
+        raise SystemExit("No wedding to preview. Use --list-weddings.")
+    agent = eo_db.get_agent_by_slug("event_reminder")
+    if not agent:
+        raise SystemExit("The Event Reminder agent is not in this database yet — restart the "
+                         "app once so it is seeded, or run --refresh-agents.")
+    events = eo_db.list_events(wedding["id"])
+    event = eo_db.get_event(int(event_id)) if event_id else prompt_render.next_event(events)
+    if not event:
+        raise SystemExit("This wedding has no functions; run --set-events first.")
+    guests = eo_db.list_contacts(wedding_id=wedding["id"], limit=1)["items"]
+    r = prompt_render.render_prompt(agent, wedding=wedding, event=event,
+                                    guest=guests[0] if guests else None, events=events)
+    print(f"Wedding #{wedding['id']} '{wedding['name']}' — function #{event['id']} "
+          f"'{event['name']}'" + ("" if event_id else " (next to start)"))
+    print("=" * 70)
+    print(r["system_instruction"])
+    print("=" * 70)
+    print("TRIGGER:", r["trigger"])
+    if r["missing"]:
+        print("\nMISSING (blank in the data, left out of the prompt):", r["missing"])
+
+
 def preview(wid, event_id, agent, owner):
     guests = eo_db.guests_for_audience(wid, "all", created_by=owner)
     r = prompt_render.render_prompt(agent, wedding=eo_db.get_wedding(wid),
@@ -388,7 +422,10 @@ def main():
     ap.add_argument("--phone", help="set the sample guest's number, e.g. +919876543210")
     ap.add_argument("--preview", metavar="EVENT_KEY",
                     help="print the rendered prompt; 'schedule' renders the Wedding Schedule "
-                         "agent with no event, read-only")
+                         "agent with no event, 'reminder' the strict Event Reminder for the "
+                         "next function to start (or --event ID) — both read-only")
+    ap.add_argument("--event", metavar="ID", type=int,
+                    help="with --preview reminder, the function to render instead of the next one")
     ap.add_argument("--wedding", metavar="ID", type=int,
                     help="with --preview schedule or --set-events, the wedding to use "
                          "(default: the one named in WEDDING_NAME)")
@@ -424,6 +461,10 @@ def main():
 
     if args.preview == "schedule":
         preview_schedule(args.wedding)
+        return
+
+    if args.preview == "reminder":
+        preview_reminder(args.wedding, args.event)
         return
 
     if args.list_weddings:

@@ -387,25 +387,64 @@ def test_silence_nudge_fires_once_then_escalates(monkeypatch):
     assert "Pratik" in still_there[0]
 
 
-# Greeting watchdog: one firm push when Gemini stalls on the opening line
+# Greeting watchdog: repeated pushes when Gemini stalls on the opening line, then give up
 
-def test_greeting_watchdog_pushes_exactly_once(monkeypatch):
-    monkeypatch.setenv("EO_GREETING_NUDGE_SECONDS", "0.5")
+def test_greeting_watchdog_pushes_once_per_interval(monkeypatch):
+    """One push per interval — never two in the same tick, never before the interval."""
+    monkeypatch.setenv("EO_GREETING_NUDGE_SECONDS", "5")
+    monkeypatch.setenv("EO_GREETING_NUDGE_MAX", "3")
 
     async def run():
         b = _bridge()
-        b._greeting_sent_at = time.monotonic() - 5    # trigger sent, still no agent audio
+        b._greeting_sent_at = time.monotonic() - 6    # trigger sent, still no agent audio
         task = asyncio.create_task(b._idle_hangup_guard())
-        await asyncio.sleep(2.3)                      # two+ guard ticks
+        await asyncio.sleep(2.3)                      # two+ guard ticks, one interval elapsed
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        msgs = []
-        while not b.text_input_queue.empty():
-            msgs.append(b.text_input_queue.get_nowait())
-        return msgs
+        return _queued(b)
 
     msgs = asyncio.run(run())
     assert sum("Speak your opening line" in m for m in msgs) == 1
+    assert not any("Still nothing" in m for m in msgs)
+
+
+def test_greeting_watchdog_keeps_pushing_then_gives_the_call_up(monkeypatch):
+    """A tester said "hello" into 20s of silence (25 Sep, the number ending 10): the single
+    push had no follow-up, and every other rescue waits for agent audio. Now the push repeats
+    EO_GREETING_NUDGE_MAX times, one interval apart; then the call is recorded not_reachable
+    (the campaign redials it) and hung up — muted and abort-locked, so the guest's "hello?"
+    cannot keep a dead line open."""
+    monkeypatch.setenv("EO_GREETING_NUDGE_SECONDS", "0.3")
+    monkeypatch.setenv("EO_GREETING_NUDGE_MAX", "2")
+    events = []
+
+    async def on_event(e):
+        events.append(e)
+
+    async def run():
+        b = _bridge()
+        b.on_event = on_event
+        b.call_id = "call-1"
+        b._greeting_sent_at = time.monotonic() - 5
+        task = asyncio.create_task(b._idle_hangup_guard())
+        await asyncio.sleep(3.4)                      # ticks: push, push, give up
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        pending = b._pending_hangup_task
+        if pending:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        return b, _queued(b), pending
+
+    b, msgs, pending = asyncio.run(run())
+    assert [m[:20] for m in msgs] == ["[Speak your opening ", "[Still nothing has b"]
+    assert b._greeting_stalled and b._rsvp_recorded and b._ending and b._abort_locked
+    assert pending is not None                        # the hangup was scheduled
+    recorded = [e for e in events
+                if e.get("type") == "tool_call" and e.get("name") == "record_outcome"]
+    assert len(recorded) == 1
+    assert recorded[0]["result"]["outcome_status"] == "not_reachable"
+    assert "session stall" in recorded[0]["result"]["note"]
 
 
 def test_greeting_watchdog_never_fires_after_audio_started(monkeypatch):
@@ -1383,3 +1422,53 @@ def test_narrated_tool_call_mutes_the_rest_of_the_turn_but_keeps_the_goodbye():
         cleared = any(p.get("event") == "clearAudio" for p in ws.sent)
         return before, after, b._out_frames.qsize(), bool(b._residual), cleared
     assert asyncio.run(run()) == (False, True, 5, False, False)
+
+
+# ------------------------------------------------------------- 25 Sep 2026 live reports
+def test_a_gujarati_reply_answered_in_hindi_gets_the_switch_prompt():
+    """"Gujarati me reply dene pr vo hindi me bata raha hai": the check only looked for an
+    English answer, so an answer in the wrong Indic script was never corrected."""
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        await b._on_caller_text("હા બોલો, શું કામ છે તમારે આજે?")
+        await b._on_agent_text("जी बिल्कुल। मैं बस आपको बताना चाहती थी कि सूफी नाइट शाम सात बजे")
+        first = _queued(b)
+        await b._on_agent_text(" ग्रेट पार्क में शुरू होगी।")
+        return first, _queued(b)
+    first, later = asyncio.run(run())
+    assert len(first) == 1
+    assert "looked like Gujarati" in first[0] and "answering in Hindi or Marathi" in first[0]
+    assert later == []                                # once per call
+
+
+def test_a_redial_that_goes_dead_is_not_reached_not_another_callback(monkeypatch):
+    """Apeksha's callback rang her back, stalled, and the silence wrap-up recorded "callback"
+    again — queueing the same dead call. On a redial (generation >= 1) it records
+    not_reachable instead; a first call keeps "callback"."""
+    monkeypatch.setenv("EO_SILENCE_CHECK", "true")
+    monkeypatch.setenv("EO_SILENCE_PROMPT_SECONDS", "0.2")
+    monkeypatch.setenv("EO_SILENCE_HANGUP_SECONDS", "0.5")
+
+    async def run(generation):
+        b = _bridge()
+        b.stream_id = "s1"
+        b.generation = generation
+        b._agent_audio_started = True
+        t = time.monotonic()
+        b._last_agent_audio = t - 10
+        b._last_caller_audio = t - 10
+        b._last_activity = t - 10
+        task = asyncio.create_task(b._idle_hangup_guard())
+        await asyncio.sleep(2.3)                      # tick 1: still there?  tick 2: wrap up
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if b._pending_hangup_task:
+            b._pending_hangup_task.cancel()
+        return [m for m in _queued(b) if "seems dead" in m]
+
+    (redial,) = asyncio.run(run(1))
+    assert 'record "not_reachable"' in redial and '"callback"' not in redial
+    (first,) = asyncio.run(run(0))
+    assert 'record "callback"' in first

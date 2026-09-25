@@ -129,11 +129,14 @@ def test_the_schedule_agent_drops_what_would_break_on_a_call():
     assert "Ved" not in t and "Riya" not in t
 
 
-def test_event_reminder_is_about_one_event_again():
+def test_event_reminder_is_about_one_event_and_one_event_only():
+    """Since 25 Sep 2026 the reminder is the family's fixed script: it no longer even
+    carries the schedule to look another function up in."""
     t = _seed("event_reminder")["prompt_template"]
-    assert "{schedule}" in t and "{schedule_detail}" not in t
+    assert "{schedule}" not in t and "{schedule_detail}" not in t
     assert "## THE ONE EVENT YOU ARE CALLING ABOUT" in t
-    assert "Do NOT read the whole schedule out unless they actually ask" in t
+    assert "## STRICT RULES" in t
+    assert "Do NOT read the whole schedule out unless they actually ask" not in t
 
 
 # ------------------------------------------------------------ a call with no event

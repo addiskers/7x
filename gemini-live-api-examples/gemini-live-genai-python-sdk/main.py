@@ -345,6 +345,13 @@ def _resolve_call_context(agent_id=None, event_id=None, guest_id=None, wedding_i
         # burst must not re-read it per dial on the answer-webhook path.
         events = _cached("events", wid, eo_db.list_events) if wid else None
 
+        # A one-function agent with no function named — a cold inbound call, or a campaign
+        # saved without one — is about the next function to start. Without this the strict
+        # reminder would read "will start at at" to a guest who rang us.
+        if not event and (agent or {}).get("requires_event") and events:
+            event = prompt_render.next_event(events)
+            ctx["event"] = event
+
         rendered = prompt_render.render_prompt(
             agent, wedding=ctx["wedding"], event=event, guest=guest, events=events)
         ctx["system_instruction"] = rendered["system_instruction"]
