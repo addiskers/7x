@@ -221,9 +221,10 @@ all of them match the same guest.
 
 The Event Reminder Specialist opens with the family's lines — "Hello, I'm speaking from
 <team>. Am I speaking to <name>?" → "Hi <name>! I just wanted to inform you that <function>
-will start at <time> at <venue>." — answers what it knows about THAT function, notes what
-the guest tells it ("pure vegetarian"), and never names another function. English, Hindi or
-Gujarati, closing in the language of the call.
+will start at <time> at <venue>." — repeats the time and venue if asked and shares nothing
+else, not even about that function (any question → "I will tell the team to get back to you",
+noted for the team), never confirms an arrangement, and never names another function.
+English, Hindi or Gujarati, closing in the language of the call.
 
 After a deploy that changes `agent_seeds.py`:
 

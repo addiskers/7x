@@ -59,18 +59,25 @@ def test_no_other_function_is_named_anywhere():
     assert "the team will share those details with them separately" in si
 
 
-def test_it_is_warm_and_helpful_about_this_function():
-    """The first strict cut deflected "what time?" and "I am pure vegetarian" to "the team
-    will get back to you" and hung up — the family wanted the old manner back, minus the
-    other functions."""
+def test_it_is_warm_but_shares_nothing_beyond_the_script():
+    """The first strict cut deflected "what time?" and hung up; the warm cut then confirmed
+    Jain food on its own. The family's line: the manner is warm, the CONTENT is the script —
+    time and venue may be repeated, anything else goes to the team, nothing is confirmed."""
+    t = _seed()["prompt_template"]
+    for ph in ("{dress_code}", "{announcement}", "{hotel}", "{room_number}", "{side_phrase}"):
+        assert ph not in t, ph
     si = _render()["system_instruction"]
     assert "acknowledge them warmly, by name" in si
-    assert "Answer whatever you can from the facts above — the time again, the venue" in si
-    assert "Noted, pure vegetarian" in si
+    assert "You may repeat the time and the venue." in si
+    assert "I will tell the team to get back to you on that" in si
+    assert "Never confirm that something will be provided or arranged — not Jain food" in si
+    assert "Noted — I'll pass that on to the team" in si
+    assert "Acknowledging is not confirming" in si
     assert "put it in the note when you record the outcome" in si
-    assert "## WHEN THEY ASK YOU SOMETHING ELSE" in si         # the helpfulness block is back
+    assert "## WHEN THEY ASK YOU SOMETHING ELSE" in si         # never hangs up on a question
     assert "Is there anything else I can help you with?" in si
-    assert "The hospitality team will get back to you on that." not in si
+    assert "guest support desks" not in si
+    assert "That is the whole of what you may say about it." in si
 
 
 def test_three_languages_no_menu_and_the_goodbye_stays_in_the_calls_language():
